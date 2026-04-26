@@ -32,11 +32,29 @@ class TensorWrapper(gym.Wrapper):
 		return obs
 
 	def reset(self, task_idx=None):
-		return self._obs_to_tensor(self.env.reset())
+		result = self.env.reset()
+		# Handle both old API (obs only) and new API (obs, info)
+		if isinstance(result, tuple):
+			obs, info = result
+		else:
+			obs = result
+		return self._obs_to_tensor(obs)
 
 	def step(self, action):
-		obs, reward, done, info = self.env.step(action.numpy())
+		result = self.env.step(action.numpy())
+		# Handle both old API (4 values) and new API (5 values)
+		if len(result) == 5:
+			obs, reward, terminated, truncated, info = result
+			done = terminated or truncated
+		else:
+			obs, reward, done, info = result
+			terminated = done
+
 		info = defaultdict(float, info)
-		info['success'] = float(info['success'])
-		info['terminated'] = torch.tensor(float(info['terminated']))
+		info['success'] = float(info.get('success', 0.0))
+		info['terminated'] = torch.tensor(float(terminated))
+		# Add collision_total if not present
+		if 'collision_total' not in info:
+			info['collision_total'] = float(info.get('collision', 0.0))
+
 		return self._obs_to_tensor(obs), torch.tensor(reward, dtype=torch.float32), done, info

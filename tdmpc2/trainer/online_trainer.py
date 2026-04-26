@@ -1,8 +1,10 @@
 from time import time
+from pathlib import Path
 
 import numpy as np
 import torch
 from tensordict.tensordict import TensorDict
+from common.trajectory_viz import save_ugv_trajectory
 from trainer.base import Trainer
 
 
@@ -14,6 +16,8 @@ class OnlineTrainer(Trainer):
 		self._step = 0
 		self._ep_idx = 0
 		self._start_time = time()
+		self._episode_states = []
+		self._next_trajectory_step = self.cfg.get('trajectory_freq', None) if self.cfg.get('save_trajectory', False) else None
 
 	def common_metrics(self):
 		"""Return a dictionary of current metrics."""
@@ -28,6 +32,7 @@ class OnlineTrainer(Trainer):
 	def eval(self):
 		"""Evaluate a TD-MPC2 agent."""
 		ep_rewards, ep_successes, ep_collisions, ep_lengths = [], [], [], []
+		ep_goal_distances, ep_path_lengths, ep_out_of_bounds = [], [], []
 		for i in range(self.cfg.eval_episodes):
 			obs, done, ep_reward, t = self.env.reset(), False, 0, 0
 			if self.cfg.save_video:
@@ -44,6 +49,9 @@ class OnlineTrainer(Trainer):
 			ep_successes.append(info['success'])
 			ep_collisions.append(info['collision_total'])
 			ep_lengths.append(t)
+			ep_goal_distances.append(info.get('goal_distance', 0.0))
+			ep_path_lengths.append(info.get('path_length', 0.0))
+			ep_out_of_bounds.append(info.get('out_of_bounds', 0.0))
 			if self.cfg.save_video:
 				self.logger.video.save(self._step)
 		return dict(
@@ -51,7 +59,33 @@ class OnlineTrainer(Trainer):
 			episode_success=np.nanmean(ep_successes),
 			episode_collision=np.nanmean(ep_collisions),
 			episode_length= np.nanmean(ep_lengths),
+			episode_goal_distance=np.nanmean(ep_goal_distances),
+			episode_path_length=np.nanmean(ep_path_lengths),
+			episode_out_of_bounds=np.nanmean(ep_out_of_bounds),
 		)
+
+	def _maybe_save_trajectory(self):
+		"""Save the latest UGV training episode trajectory at a fixed step interval."""
+		if not self.cfg.get('save_trajectory', False):
+			return
+		if self._next_trajectory_step is None or self._step < self._next_trajectory_step:
+			return
+		base_env = self.env.unwrapped
+		if not all(hasattr(base_env, attr) for attr in ('robot_state', 'goal', 'map_size')):
+			return
+		if len(self._episode_states) == 0:
+			return
+		traj_dir = Path(self.cfg.work_dir) / 'trajectories'
+		save_path = traj_dir / f'step_{self._step:09d}.png'
+		save_ugv_trajectory(
+			states=self._episode_states,
+			goal=base_env.goal,
+			map_size=base_env.map_size,
+			save_path=save_path,
+			title=f'UGV Trajectory @ step {self._step}',
+		)
+		while self._next_trajectory_step is not None and self._step >= self._next_trajectory_step:
+			self._next_trajectory_step += self.cfg.trajectory_freq
 
 	def to_td(self, obs, action=None, reward=None, terminated=None):
 		"""Creates a TensorDict for a new episode."""
@@ -90,6 +124,7 @@ class OnlineTrainer(Trainer):
 					eval_next = False
 
 				if self._step > 0:
+					self._maybe_save_trajectory()
 					if info['terminated'] and not self.cfg.episodic:
 						raise ValueError('Termination detected but you are not in episodic mode. ' \
 						'Set `episodic=true` to enable support for terminations.')
@@ -105,14 +140,20 @@ class OnlineTrainer(Trainer):
 
 				obs = self.env.reset()
 				self._tds = [self.to_td(obs)]
+				self._episode_states = []
 
 			# Collect experience
+			base_env = self.env.unwrapped
+			if hasattr(base_env, 'robot_state'):
+				self._episode_states.append(base_env.robot_state.copy())
 			if self._step > self.cfg.seed_steps:
 				action = self.agent.act(obs, t0=len(self._tds)==1)
 			else:
 				action = self.env.rand_act()
 			obs, reward, done, info = self.env.step(action)
 			self._tds.append(self.to_td(obs, action, reward, info['terminated']))
+			if done and hasattr(base_env, 'robot_state'):
+				self._episode_states.append(base_env.robot_state.copy())
 
 			# Update agent
 			if self._step >= self.cfg.seed_steps:
@@ -129,5 +170,6 @@ class OnlineTrainer(Trainer):
 				self.logger.save_agent(self.agent, identifier=self._step)
 
 			self._step += 1
+			self._maybe_save_trajectory()
 
 		self.logger.finish(self.agent)

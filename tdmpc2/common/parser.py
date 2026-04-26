@@ -1,4 +1,5 @@
 import dataclasses
+from datetime import datetime
 import re
 from pathlib import Path
 from typing import Any
@@ -54,7 +55,8 @@ def parse_cfg(cfg: OmegaConf) -> OmegaConf:
 			pass
 
 	# Convenience
-	cfg.work_dir = Path(hydra.utils.get_original_cwd()) / 'logs' / cfg.task / str(cfg.seed) / cfg.exp_name
+	run_id = datetime.now().strftime('%Y%m%d-%H%M%S-%f')[:-3]
+	cfg.work_dir = Path(hydra.utils.get_original_cwd()) / 'logs' / cfg.task / str(cfg.seed) / cfg.exp_name / run_id
 	cfg.task_title = cfg.task.replace("-", " ").title()
 	cfg.bin_size = (cfg.vmax - cfg.vmin) / (cfg.num_bins-1) # Bin size for discrete regression
 
