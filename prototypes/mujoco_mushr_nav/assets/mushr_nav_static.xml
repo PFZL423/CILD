@@ -1,0 +1,62 @@
+<mujoco model="mushr_nav_static">
+  <compiler angle="radian"/>
+  <size njmax="500" nconmax="200"/>
+  <option timestep="0.01" gravity="0 0 -9.81"/>
+
+  <include file="cars/base_car/buddy.xml"/>
+
+  <asset>
+    <texture name="nav_floor_tex" type="2d" builtin="checker"
+             rgb1="0.18 0.20 0.22" rgb2="0.24 0.27 0.29"
+             width="512" height="512"/>
+    <material name="nav_floor" texture="nav_floor_tex" texrepeat="8 8" texuniform="true"/>
+    <material name="nav_wall" rgba="0.28 0.31 0.34 1"/>
+    <material name="nav_obstacle" rgba="0.76 0.36 0.22 1"/>
+    <material name="nav_goal" rgba="0.10 0.70 0.32 1"/>
+  </asset>
+
+  <visual>
+    <headlight ambient="0.55 0.55 0.55" diffuse="0.45 0.45 0.45" specular="0.15 0.15 0.15"/>
+    <map znear="0.001"/>
+  </visual>
+
+  <worldbody>
+    <light name="overhead" pos="0 0 5" dir="0 0 -1" diffuse="0.7 0.7 0.7"/>
+    <camera name="overview" mode="fixed" pos="0 -7.5 7.0" euler="0.78 0 0"/>
+
+    <geom name="floor" type="plane" pos="0 0 0" size="6 6 0.1"
+          material="nav_floor" friction="0.8 0.005 0.0001"
+          contype="1" conaffinity="1" condim="3"/>
+
+    <!-- Boundary walls for a 10m x 10m navigation arena. -->
+    <geom name="wall_north" type="box" pos="0 5.05 0.25" size="5.05 0.05 0.25"
+          material="nav_wall" contype="1" conaffinity="1"/>
+    <geom name="wall_south" type="box" pos="0 -5.05 0.25" size="5.05 0.05 0.25"
+          material="nav_wall" contype="1" conaffinity="1"/>
+    <geom name="wall_east" type="box" pos="5.05 0 0.25" size="0.05 5.05 0.25"
+          material="nav_wall" contype="1" conaffinity="1"/>
+    <geom name="wall_west" type="box" pos="-5.05 0 0.25" size="0.05 5.05 0.25"
+          material="nav_wall" contype="1" conaffinity="1"/>
+
+    <!-- Static internal walls: sparse enough for the first point-goal prototype. -->
+    <geom name="inner_wall_left" type="box" pos="-1.8 0.7 0.25" size="0.08 1.35 0.25"
+          material="nav_wall" contype="1" conaffinity="1"/>
+    <geom name="inner_wall_right" type="box" pos="1.7 -0.8 0.25" size="0.08 1.20 0.25"
+          material="nav_wall" contype="1" conaffinity="1"/>
+    <geom name="inner_wall_top" type="box" pos="0.7 2.2 0.25" size="1.25 0.08 0.25"
+          material="nav_wall" contype="1" conaffinity="1"/>
+
+    <!-- Static clutter obstacles. -->
+    <geom name="box_obs_0" type="box" pos="-3.0 -1.3 0.18" size="0.35 0.35 0.18"
+          material="nav_obstacle" contype="1" conaffinity="1"/>
+    <geom name="box_obs_1" type="box" pos="2.9 1.3 0.18" size="0.45 0.30 0.18"
+          material="nav_obstacle" contype="1" conaffinity="1"/>
+    <geom name="cyl_obs_0" type="cylinder" pos="-0.4 -2.4 0.22" size="0.28 0.22"
+          material="nav_obstacle" contype="1" conaffinity="1"/>
+    <geom name="cyl_obs_1" type="cylinder" pos="3.4 -2.2 0.22" size="0.24 0.22"
+          material="nav_obstacle" contype="1" conaffinity="1"/>
+
+    <site name="goal" type="sphere" pos="3.8 -3.6 0.08" size="0.18"
+          material="nav_goal"/>
+  </worldbody>
+</mujoco>
