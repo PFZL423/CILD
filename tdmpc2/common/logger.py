@@ -235,13 +235,27 @@ class Logger:
 				_d[category + "/" + k] = v
 			self._wandb.log(_d, step=d[xkey])
 		if category == "eval" and self._save_csv:
-			keys = ["step", "episode_reward", "episode_success", "episode_collision"]
+			keys = [
+				"step",
+				"episode_reward",
+				"episode_success",
+				"episode_collision",
+				"episode_static_collision",
+				"episode_dynamic_collision",
+			]
 			self._eval.append([d.get(k, float('nan')) for k in keys])
 			pd.DataFrame(self._eval).to_csv(
 				self._log_dir / "eval.csv", header=keys, index=None
 			)
 		if category == "train" and self._save_csv:
-			train_keys = ["step", "episode_reward", "episode_success", "episode_collision"]
+			train_keys = [
+				"step",
+				"episode_reward",
+				"episode_success",
+				"episode_collision",
+				"episode_static_collision",
+				"episode_dynamic_collision",
+			]
 			row = [d.get(k, float('nan')) for k in train_keys]
 			if not hasattr(self, '_train'):
 				self._train = []

@@ -27,7 +27,7 @@ class OnlineTrainer(Trainer):
 
 	def eval(self):
 		"""Evaluate a TD-MPC2 agent."""
-		ep_rewards, ep_successes, ep_collisions, ep_lengths = [], [], [], []
+		ep_rewards, ep_successes, ep_collisions, ep_static_collisions, ep_dynamic_collisions, ep_lengths = [], [], [], [], [], []
 		for i in range(self.cfg.eval_episodes):
 			obs, done, ep_reward, t = self.env.reset(), False, 0, 0
 			if self.cfg.save_video:
@@ -43,6 +43,8 @@ class OnlineTrainer(Trainer):
 			ep_rewards.append(ep_reward)
 			ep_successes.append(info['success'])
 			ep_collisions.append(info['collision_total'])
+			ep_static_collisions.append(info.get('static_collision_total', 0.0))
+			ep_dynamic_collisions.append(info.get('dynamic_collision_total', 0.0))
 			ep_lengths.append(t)
 			if self.cfg.save_video:
 				self.logger.video.save(self._step)
@@ -50,6 +52,8 @@ class OnlineTrainer(Trainer):
 			episode_reward=np.nanmean(ep_rewards),
 			episode_success=np.nanmean(ep_successes),
 			episode_collision=np.nanmean(ep_collisions),
+			episode_static_collision=np.nanmean(ep_static_collisions),
+			episode_dynamic_collision=np.nanmean(ep_dynamic_collisions),
 			episode_length= np.nanmean(ep_lengths),
 		)
 
@@ -97,6 +101,8 @@ class OnlineTrainer(Trainer):
 						episode_reward=torch.tensor([td['reward'] for td in self._tds[1:]]).sum(),
 						episode_success=info['success'],
 						episode_collision=info['collision_total'],
+						episode_static_collision=info.get('static_collision_total', 0.0),
+						episode_dynamic_collision=info.get('dynamic_collision_total', 0.0),
 						episode_length=len(self._tds),
 						episode_terminated=info['terminated'])
 					train_metrics.update(self.common_metrics())

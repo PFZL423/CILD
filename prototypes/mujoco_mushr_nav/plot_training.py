@@ -9,7 +9,7 @@ import matplotlib.pyplot as plt
 import pandas as pd
 
 
-DEFAULT_LOG_DIR = Path(__file__).resolve().parents[2] / "tdmpc2" / "logs" / "mushr-nav-static" / "1" / "default"
+DEFAULT_LOG_DIR = Path(__file__).resolve().parents[2] / "tdmpc2" / "logs" / "mushr-nav-static-hard" / "1" / "default"
 
 
 def clean_numeric(series):
@@ -63,6 +63,10 @@ def plot_curves(log_dir: Path, out_path: Path):
     ax = axes[1, 0]
     ax.plot(eval_df["step"], eval_df["episode_collision"], marker="o", label="eval")
     ax.plot(train_df["step"], train_df["episode_collision"].rolling(20, min_periods=1).mean(), label="train rolling20", alpha=0.8)
+    if "episode_static_collision" in eval_df.columns:
+        ax.plot(eval_df["step"], eval_df["episode_static_collision"], marker=".", linestyle="--", label="eval static")
+    if "episode_dynamic_collision" in eval_df.columns:
+        ax.plot(eval_df["step"], eval_df["episode_dynamic_collision"], marker=".", linestyle="--", label="eval dynamic")
     ax.set_title("Collision")
     ax.set_ylim(-0.05, 1.05)
     ax.set_xlabel("step")
@@ -100,7 +104,15 @@ def main():
     print("eval summary:")
     print(eval_df.tail().to_string(index=False))
     print("train rolling20 tail:")
-    cols = ["step", "episode_reward", "episode_success", "episode_collision"]
+    cols = [
+        "step",
+        "episode_reward",
+        "episode_success",
+        "episode_collision",
+        "episode_static_collision",
+        "episode_dynamic_collision",
+    ]
+    cols = [col for col in cols if col in train_df.columns]
     tail = train_df[cols].copy()
     for col in cols[1:]:
         tail[col] = tail[col].rolling(20, min_periods=1).mean()

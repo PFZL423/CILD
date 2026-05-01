@@ -12,7 +12,7 @@ from matplotlib.patches import Circle, Rectangle
 import mujoco
 import numpy as np
 
-from env import DEFAULT_XML, DYNAMIC_EASY_XML, MuSHRNavConfig, MuSHRNavEnv
+from env import DEFAULT_XML, DYNAMIC_HARD_XML, MuSHRNavConfig, MuSHRNavEnv
 
 
 ROOT = Path(__file__).resolve().parent
@@ -22,7 +22,9 @@ DEFAULT_OUT = ROOT / "outputs" / "env_check"
 def heading_controller(obs: np.ndarray) -> np.ndarray:
     """只用于检查环境闭环的简单非学习控制器。"""
 
-    goal_angle = float(obs[7])
+    raw_obs_dim = 8 + 32
+    latest_obs = obs[-raw_obs_dim:]
+    goal_angle = float(latest_obs[7])
     steering = np.clip(1.8 * goal_angle, -1.0, 1.0)
     throttle = 0.55 if abs(goal_angle) < 1.2 else 0.25
     return np.array([steering, throttle], dtype=np.float32)
@@ -76,7 +78,8 @@ def plot_episode(env: MuSHRNavEnv, traj, out_path: Path):
         ax.plot(pts[:, 0], pts[:, 1], color="#2563eb", linewidth=1.5, zorder=4)
         ax.scatter(pts[0, 0], pts[0, 1], color="#1d4ed8", label="start", zorder=5)
         ax.scatter(pts[-1, 0], pts[-1, 1], color="#0f172a", label="end", zorder=5)
-    ax.scatter([3.8], [-3.6], color="#16a34a", label="goal")
+    if traj:
+        ax.scatter([traj[0]["goal_x"]], [traj[0]["goal_y"]], color="#16a34a", label="goal")
     ax.set_xlabel("x [m]")
     ax.set_ylabel("y [m]")
     ax.legend(loc="upper right")
@@ -89,16 +92,22 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--episodes", type=int, default=1)
     parser.add_argument("--max-steps", type=int, default=500)
-    parser.add_argument("--dynamic-mode", choices=["none", "easy"], default="none")
+    parser.add_argument("--dynamic-mode", choices=["none", "hard", "frozen"], default="none")
+    parser.add_argument("--dynamic-seed", type=int, default=None)
+    parser.add_argument("--fixed-layout", action="store_true")
+    parser.add_argument("--layout-template", default=None)
     parser.add_argument("--out", type=Path, default=DEFAULT_OUT)
     args = parser.parse_args()
 
     args.out.mkdir(parents=True, exist_ok=True)
-    xml_path = DYNAMIC_EASY_XML if args.dynamic_mode == "easy" else DEFAULT_XML
+    xml_path = DYNAMIC_HARD_XML if args.dynamic_mode in ("hard", "frozen") else DEFAULT_XML
     cfg = MuSHRNavConfig(
         max_episode_steps=args.max_steps,
         xml_path=xml_path,
         dynamic_mode=args.dynamic_mode,
+        dynamic_seed=args.dynamic_seed,
+        procedural_layout=not args.fixed_layout,
+        layout_template=args.layout_template,
     )
     env = MuSHRNavEnv(cfg)
     print("observation_space:", env.observation_space)
@@ -120,7 +129,9 @@ def main():
         print(
             f"episode={ep} steps={info['step']} return={total_reward:.3f} "
             f"success={info['success']} collision={info['collision']} "
-            f"distance={info['distance_to_goal']:.3f} min_obs_dist={info['min_obstacle_distance']:.3f}"
+            f"distance={info['distance_to_goal']:.3f} path={info['path_length']:.3f} "
+            f"spl={info['spl']:.3f} min_obs_dist={info['episode_min_obstacle_distance']:.3f} "
+            f"min_ttc={info['min_ttc']:.3f}"
         )
         plot_episode(env, traj, args.out / f"episode_{ep:02d}.png")
 

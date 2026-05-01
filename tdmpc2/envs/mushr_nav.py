@@ -9,12 +9,13 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(_REPO_ROOT) not in sys.path:
 	sys.path.append(str(_REPO_ROOT))
 
-from prototypes.mujoco_mushr_nav.env import DYNAMIC_EASY_XML, MuSHRNavConfig, MuSHRNavEnv
+from prototypes.mujoco_mushr_nav.env import DYNAMIC_HARD_XML, MuSHRNavConfig, MuSHRNavEnv
 
 
 MUSHR_NAV_TASKS = {
-	'mushr-nav-static',
-	'mushr-nav-dynamic-easy',
+	'mushr-nav-static-hard',
+	'mushr-nav-dynamic-hard',
+	'mushr-nav-dynamic-frozen',
 }
 
 
@@ -26,9 +27,13 @@ class MuSHRNavWrapper(gym.Wrapper):
 		self.env = env
 		self.cfg = cfg
 		self._collision_total = 0
+		self._static_collision_total = 0
+		self._dynamic_collision_total = 0
 
 	def reset(self):
 		self._collision_total = 0
+		self._static_collision_total = 0
+		self._dynamic_collision_total = 0
 		obs, _ = self.env.reset()
 		return obs
 
@@ -36,11 +41,20 @@ class MuSHRNavWrapper(gym.Wrapper):
 		obs, reward, terminated, truncated, info = self.env.step(action.copy())
 		done = terminated or truncated
 		self._collision_total += int(info.get('collision', False))
+		self._static_collision_total += int(info.get('static_collision', False))
+		self._dynamic_collision_total += int(info.get('dynamic_collision', False))
 
 		info['terminated'] = bool(terminated)
 		info['success'] = float(info.get('success', False))
 		info['collision'] = float(info.get('collision', False))
+		info['static_collision'] = float(info.get('static_collision', False))
+		info['dynamic_collision'] = float(info.get('dynamic_collision', False))
+		info['timeout'] = float(info.get('timeout', False))
 		info['collision_total'] = float(self._collision_total)
+		info['static_collision_total'] = float(self._static_collision_total)
+		info['dynamic_collision_total'] = float(self._dynamic_collision_total)
+		for key in ['near_miss', 'dynamic_near_miss', 'ttc_violation']:
+			info[key] = float(info.get(key, False))
 		return obs, reward, done, info
 
 	@property
@@ -59,8 +73,10 @@ def make_env(cfg):
 		raise ValueError('Unknown task:', cfg.task)
 	assert cfg.obs == 'state', 'MuSHR navigation currently supports state observations only.'
 
-	if cfg.task == 'mushr-nav-dynamic-easy':
-		env_cfg = MuSHRNavConfig(xml_path=DYNAMIC_EASY_XML, dynamic_mode='easy')
+	if cfg.task == 'mushr-nav-dynamic-hard':
+		env_cfg = MuSHRNavConfig(xml_path=DYNAMIC_HARD_XML, dynamic_mode='hard')
+	elif cfg.task == 'mushr-nav-dynamic-frozen':
+		env_cfg = MuSHRNavConfig(xml_path=DYNAMIC_HARD_XML, dynamic_mode='frozen')
 	else:
 		env_cfg = MuSHRNavConfig()
 	env = MuSHRNavEnv(env_cfg)
