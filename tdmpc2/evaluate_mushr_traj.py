@@ -37,6 +37,10 @@ EVAL_MODES = (
 	('moving', 'hard', 'mushr-nav-dynamic-hard'),
 )
 
+FIXED_GEODESIC_MODES = (
+	('static_fixed_geodesic', 'none', 'mushr-nav-static-fixed-geodesic'),
+)
+
 
 def _to_float(value):
 	if isinstance(value, torch.Tensor):
@@ -99,15 +103,16 @@ def draw_layout(env: MuSHRNavEnv, ax):
 				)
 
 
-def plot_trajectories(env_by_mode, traj_rows, out_path: Path, max_pairs: int):
-	fig, axes = plt.subplots(1, 3, figsize=(15, 5), dpi=160, sharex=True, sharey=True)
+def plot_trajectories(env_by_mode, traj_rows, out_path: Path, max_pairs: int, eval_modes=EVAL_MODES):
+	fig, axes = plt.subplots(1, len(eval_modes), figsize=(5 * len(eval_modes), 5), dpi=160, sharex=True, sharey=True)
+	axes = np.atleast_1d(axes)
 	rows_by_mode_pair = defaultdict(list)
 	for row in traj_rows:
 		pair_idx = int(row['pair_idx'])
 		if pair_idx < max_pairs:
 			rows_by_mode_pair[(row['mode'], pair_idx)].append(row)
 
-	for ax, (mode, _dynamic_mode, _task) in zip(axes, EVAL_MODES):
+	for ax, (mode, _dynamic_mode, _task) in zip(axes, eval_modes):
 		ax.set_title(mode)
 		ax.set_aspect('equal')
 		ax.set_xlim(-5.5, 5.5)
@@ -129,13 +134,14 @@ def plot_trajectories(env_by_mode, traj_rows, out_path: Path, max_pairs: int):
 	plt.close(fig)
 
 
-def make_proto_env(dynamic_mode: str, max_steps: int):
+def make_proto_env(dynamic_mode: str, max_steps: int, reward_mode: str = 'euclidean'):
 	return MuSHRNavEnv(
 		MuSHRNavConfig(
 			xml_path=DYNAMIC_HARD_XML,
 			max_episode_steps=max_steps,
 			dynamic_mode=dynamic_mode,
 			procedural_layout=True,
+			reward_mode=reward_mode,
 		)
 	)
 
@@ -278,6 +284,23 @@ def summarize(results):
 	return rows
 
 
+def resolve_eval_modes(cfg):
+	if cfg.get('traj_mode', 'paired') == 'fixed_geodesic' or cfg.task == 'mushr-nav-static-fixed-geodesic':
+		return FIXED_GEODESIC_MODES
+	return EVAL_MODES
+
+
+def seed_pairs_for_modes(cfg, split: str, episodes: int, eval_modes):
+	if eval_modes == FIXED_GEODESIC_MODES:
+		layout_seed = int(cfg.get('traj_layout_seed', 0))
+		dynamic_seed = int(cfg.get('traj_dynamic_seed', 0))
+		return [
+			type('SeedPair', (), {'split': split, 'layout_seed': layout_seed, 'dynamic_seed': dynamic_seed})()
+			for _ in range(episodes)
+		]
+	return make_seed_pairs(split, episodes=episodes)
+
+
 @hydra.main(config_name='config', config_path='.')
 def main(cfg):
 	assert torch.cuda.is_available()
@@ -292,7 +315,8 @@ def main(cfg):
 	split = cfg.get('eval_split', 'seen')
 	if split not in split_names():
 		raise ValueError(f'Unknown eval_split={split!r}; choose from {split_names()}')
-	seed_pairs = make_seed_pairs(split, episodes=episodes)
+	eval_modes = resolve_eval_modes(cfg)
+	seed_pairs = seed_pairs_for_modes(cfg, split, episodes, eval_modes)
 
 	print(colored(f'Checkpoint: {cfg.checkpoint}', 'blue', attrs=['bold']))
 	print(colored(f'Split: {split} episodes={len(seed_pairs)} max_steps={max_steps}', 'blue', attrs=['bold']))
@@ -304,14 +328,18 @@ def main(cfg):
 	agent.model.eval()
 
 	env_by_mode = {
-		mode: make_proto_env(dynamic_mode, max_steps)
-		for mode, dynamic_mode, _task in EVAL_MODES
+		mode: make_proto_env(
+			dynamic_mode,
+			max_steps,
+			reward_mode='geodesic' if task.endswith('fixed-geodesic') else 'euclidean',
+		)
+		for mode, dynamic_mode, task in eval_modes
 	}
 
 	results = []
 	traj_rows = []
 	for pair_idx, pair in enumerate(seed_pairs):
-		for mode, _dynamic_mode, task in EVAL_MODES:
+		for mode, _dynamic_mode, task in eval_modes:
 			result, traj = rollout(
 				agent,
 				env_by_mode[mode],
@@ -330,7 +358,7 @@ def main(cfg):
 	write_csv(out_dir / 'learned_episodes.csv', results)
 	write_csv(out_dir / 'learned_trajectories.csv', traj_rows)
 	write_csv(out_dir / 'summary.csv', summarize(results))
-	plot_trajectories(env_by_mode, traj_rows, out_dir / 'learned_trajectories.png', plot_episodes)
+	plot_trajectories(env_by_mode, traj_rows, out_dir / 'learned_trajectories.png', plot_episodes, eval_modes)
 	print(colored(f'Wrote {out_dir / "learned_episodes.csv"}', 'yellow'))
 	print(colored(f'Wrote {out_dir / "learned_trajectories.csv"}', 'yellow'))
 	print(colored(f'Wrote {out_dir / "summary.csv"}', 'yellow'))
