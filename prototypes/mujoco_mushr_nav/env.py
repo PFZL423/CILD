@@ -37,11 +37,12 @@ class MuSHRNavConfig:
     goal_radius: float = 0.35
     max_steering: float = 0.38
     max_throttle: float = 5.0
-    success_bonus: float = 10.0
-    collision_penalty: float = 10.0
+    success_bonus: float = 50.0
+    collision_penalty: float = 20.0
     time_penalty: float = 0.01
     control_penalty: float = 0.01
     progress_scale: float = 1.0
+    potential_scale: float = 0.005
     reward_mode: str = "euclidean"
     near_obstacle_penalty: float = 0.2
     near_obstacle_margin: float = 0.8
@@ -689,7 +690,12 @@ class MuSHRNavEnv(gym.Env):
         collision: bool,
         min_obstacle_distance: float,
     ) -> float:
-        reward = self.cfg.progress_scale * progress
+        # 势函数 reward：基于 geodesic 距离的稠密信号
+        # geodesic 距离会自动绕开障碍物，避免欧氏距离把小车引向墙
+        # scale=0.005 让势函数累积量级与 collision_penalty 同档（不压倒终局信号）
+        reward = -self.cfg.potential_scale * self._reward_distance()
+
+        reward += self.cfg.progress_scale * progress
         reward -= self.cfg.time_penalty
         reward -= self.cfg.control_penalty * float(np.square(action).sum())
         if min_obstacle_distance < self.cfg.near_obstacle_margin:

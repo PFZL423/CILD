@@ -106,6 +106,27 @@ def make_env(cfg):
 
 	# MuSHR 导航会因为 success/collision 提前终止，TD-MPC2 需要 episodic=true。
 	cfg.episodic = True
-	cfg.discount_max = 0.99
-	cfg.rho = 0.7
+
+	# discount: 500步episode用0.99太高，bootstrapping噪声大；0.97更稳定
+	cfg.discount_max = 0.97
+	cfg.discount_min = 0.97
+
+	# rho: 保持原版0.5，0.7会放大远端误差
+	cfg.rho = 0.5
+
+	# seed_steps 在 envs/__init__.py 里被覆盖，所以在那里处理
+
+	# reward_coef: 原版0.1对progress≈0.1m/step的奖励信号太弱，调大让reward loss主导早期学习
+	cfg.reward_coef = 1.0
+
+	# termination_coef: 500步里只有1步是terminated=1，比例1:499，权重过高会压制其他loss
+	cfg.termination_coef = 0.5
+
+	# vmin/vmax: two_hot 在存储前会先做 symlog，所以这里要填 symlog 之后的范围。
+	# 实际 reward 范围约 [-10.1, +10.2]，symlog(±10) ≈ ±2.40，symlog(0.1) ≈ 0.095。
+	# 用 ±4 覆盖所有值，101个bin时 bin_size=0.08，稠密 progress 信号有足够分辨率。
+	# 原来 ±10 导致 101 个 bin 里 progress 信号只占 <1 个 bin，梯度几乎为零。
+	cfg.vmin = -4
+	cfg.vmax = 4
+
 	return env

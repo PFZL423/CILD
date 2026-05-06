@@ -83,5 +83,7 @@ def make_env(cfg):
 		cfg.obs_shape = {cfg.get('obs', 'state'): env.observation_space.shape}
 	cfg.action_dim = env.action_space.shape[0]
 	cfg.episode_length = env.max_episode_steps
-	cfg.seed_steps = max(1000, 5*cfg.episode_length)
+	# mushr 任务需要更多随机数据才能开始训练，用20倍而不是5倍
+	multiplier = 20 if cfg.task.startswith('mushr') else 5
+	cfg.seed_steps = max(1000, multiplier * cfg.episode_length)
 	return env
