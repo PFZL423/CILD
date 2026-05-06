@@ -14,8 +14,10 @@ from prototypes.mujoco_mushr_nav.env import DYNAMIC_HARD_XML, MuSHRNavConfig, Mu
 
 MUSHR_NAV_TASKS = {
 	'mushr-nav-static-hard',
+	'mushr-nav-static-fixed-geodesic',
 	'mushr-nav-dynamic-hard',
 	'mushr-nav-dynamic-frozen',
+	'mushr-nav-dynamic-fixed-geodesic',
 }
 
 
@@ -53,6 +55,8 @@ class MuSHRNavWrapper(gym.Wrapper):
 		info['collision_total'] = float(self._collision_total)
 		info['static_collision_total'] = float(self._static_collision_total)
 		info['dynamic_collision_total'] = float(self._dynamic_collision_total)
+		for key in ['euclidean_distance_to_goal', 'geodesic_distance_to_goal', 'reward_distance_to_goal', 'progress']:
+			info[key] = float(info.get(key, 0.0))
 		for key in ['near_miss', 'dynamic_near_miss', 'ttc_violation']:
 			info[key] = float(info.get(key, False))
 		return obs, reward, done, info
@@ -73,7 +77,25 @@ def make_env(cfg):
 		raise ValueError('Unknown task:', cfg.task)
 	assert cfg.obs == 'state', 'MuSHR navigation currently supports state observations only.'
 
-	if cfg.task == 'mushr-nav-dynamic-hard':
+	if cfg.task == 'mushr-nav-static-fixed-geodesic':
+		env_cfg = MuSHRNavConfig(
+			reward_mode='geodesic',
+			procedural_layout=True,
+			layout_seed=0,
+		)
+	elif cfg.task == 'mushr-nav-dynamic-fixed-geodesic':
+		env_cfg = MuSHRNavConfig(
+			xml_path=DYNAMIC_HARD_XML,
+			reward_mode='geodesic',
+			procedural_layout=True,
+			layout_seed=0,
+			dynamic_mode='hard',
+			dynamic_seed=0,
+			dynamic_random_phase=False,
+			dynamic_random_speed=False,
+			dynamic_random_amplitude=False,
+		)
+	elif cfg.task == 'mushr-nav-dynamic-hard':
 		env_cfg = MuSHRNavConfig(xml_path=DYNAMIC_HARD_XML, dynamic_mode='hard')
 	elif cfg.task == 'mushr-nav-dynamic-frozen':
 		env_cfg = MuSHRNavConfig(xml_path=DYNAMIC_HARD_XML, dynamic_mode='frozen')

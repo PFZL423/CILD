@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from heapq import heappop, heappush
 from pathlib import Path
 from typing import Optional
 
@@ -41,6 +42,7 @@ class MuSHRNavConfig:
     time_penalty: float = 0.01
     control_penalty: float = 0.01
     progress_scale: float = 1.0
+    reward_mode: str = "euclidean"
     near_obstacle_penalty: float = 0.2
     near_obstacle_margin: float = 0.8
     near_miss_margin: float = 0.4
@@ -74,6 +76,7 @@ class MuSHRNavEnv(gym.Env):
         self.cfg = cfg or MuSHRNavConfig()
         if self.cfg.history_len < 1:
             raise ValueError("history_len must be >= 1")
+        self._validate_reward_mode(self.cfg.reward_mode)
         self.model = mujoco.MjModel.from_xml_path(str(self.cfg.xml_path))
         self.data = mujoco.MjData(self.model)
 
@@ -160,6 +163,7 @@ class MuSHRNavEnv(gym.Env):
 
         self._step_count = 0
         self._prev_goal_distance = 0.0
+        self._prev_reward_distance = 0.0
         self._obs_history = np.zeros((self.cfg.history_len, self.raw_obs_dim), dtype=np.float32)
         self._episode_initial_goal_distance = 0.0
         self._episode_path_length = 0.0
@@ -170,6 +174,10 @@ class MuSHRNavEnv(gym.Env):
         self._episode_dynamic_near_miss = False
         self._episode_ttc_violation = False
         self._prev_path_pos = np.zeros(2, dtype=np.float64)
+        self._geodesic_cache_key = None
+        self._geodesic_xs = None
+        self._geodesic_ys = None
+        self._geodesic_distances = None
 
     def reset(self, *, seed: Optional[int] = None, options: Optional[dict] = None):
         super().reset(seed=seed)
@@ -181,6 +189,7 @@ class MuSHRNavEnv(gym.Env):
 
         self._step_count = 0
         self._prev_goal_distance = self._goal_distance()
+        self._prev_reward_distance = self._reward_distance()
         car_pos, _ = self._car_pose()
         self._episode_initial_goal_distance = self._layout_geodesic_distance()
         self._episode_path_length = 0.0
@@ -225,8 +234,10 @@ class MuSHRNavEnv(gym.Env):
         self._update_episode_metrics()
 
         distance = self._goal_distance()
-        progress = self._prev_goal_distance - distance
+        reward_distance = self._reward_distance()
+        progress = self._prev_reward_distance - reward_distance
         self._prev_goal_distance = distance
+        self._prev_reward_distance = reward_distance
 
         bad_state = self._has_bad_state()
         if bad_state and not collision:
@@ -248,6 +259,10 @@ class MuSHRNavEnv(gym.Env):
     @property
     def max_episode_steps(self):
         return self.cfg.max_episode_steps
+
+    def _validate_reward_mode(self, mode: str):
+        if mode not in ("euclidean", "geodesic"):
+            raise ValueError(f"Unknown reward mode: {mode}")
 
     def _required_id(self, obj_type, name: str) -> int:
         obj_id = mujoco.mj_name2id(self.model, obj_type, name)
@@ -706,6 +721,10 @@ class MuSHRNavEnv(gym.Env):
             "goal_x": float(self._goal_xy()[0]),
             "goal_y": float(self._goal_xy()[1]),
             "distance_to_goal": self._goal_distance(),
+            "euclidean_distance_to_goal": self._goal_distance(),
+            "geodesic_distance_to_goal": self._info_geodesic_distance_to_goal(),
+            "reward_distance_to_goal": self._reward_distance(),
+            "reward_mode": self.cfg.reward_mode,
             "progress": float(progress),
             "success": bool(success),
             "collision": bool(collision),
@@ -758,6 +777,134 @@ class MuSHRNavEnv(gym.Env):
         if self._current_layout is None:
             return self._goal_distance()
         return float(self._current_layout.geodesic_distance)
+
+    def _reward_distance(self) -> float:
+        if self.cfg.reward_mode == "euclidean":
+            return self._goal_distance()
+        return self._geodesic_distance_to_goal()
+
+    def _info_geodesic_distance_to_goal(self) -> float:
+        if self.cfg.reward_mode != "geodesic":
+            return float("nan")
+        return self._geodesic_distance_to_goal()
+
+    def _geodesic_distance_to_goal(self) -> float:
+        if self._current_layout is None:
+            return self._goal_distance()
+        self._ensure_geodesic_distance_field()
+        car_pos, _ = self._car_pose()
+        idx = self._layout_generator._xy_to_grid(car_pos[:2], self._geodesic_xs, self._geodesic_ys)
+        if idx is None:
+            return self._goal_distance()
+        distance = float(self._geodesic_distances[idx])
+        if np.isfinite(distance):
+            return distance
+        nearest = self._nearest_finite_geodesic_distance(idx)
+        return nearest if np.isfinite(nearest) else self._goal_distance()
+
+    def _ensure_geodesic_distance_field(self):
+        cache_key = self._geodesic_cache_key_for_current_layout()
+        if cache_key == self._geodesic_cache_key and self._geodesic_distances is not None:
+            return
+        if self._current_layout is None:
+            self._geodesic_cache_key = None
+            self._geodesic_xs = None
+            self._geodesic_ys = None
+            self._geodesic_distances = None
+            return
+
+        xs, ys = self._layout_generator._grid_axes()
+        occupied = self._layout_occupied_grid(xs, ys)
+        goal_idx = self._layout_generator._xy_to_grid(self._current_layout.goal_xy, xs, ys)
+        if goal_idx is None or occupied[goal_idx]:
+            raise RuntimeError("current layout goal is outside the geodesic grid or occupied")
+
+        self._geodesic_cache_key = cache_key
+        self._geodesic_xs = xs
+        self._geodesic_ys = ys
+        self._geodesic_distances = self._dijkstra_distance_field(occupied, goal_idx)
+
+    def _geodesic_cache_key_for_current_layout(self):
+        if self._current_layout is None:
+            return None
+        goal = tuple(np.round(self._current_layout.goal_xy.astype(np.float64), 6))
+        return (
+            self._current_layout.template_name,
+            int(self._current_layout.seed),
+            goal,
+        )
+
+    def _layout_occupied_grid(self, xs: np.ndarray, ys: np.ndarray) -> np.ndarray:
+        occupied = np.zeros((len(xs), len(ys)), dtype=bool)
+        xx, yy = np.meshgrid(xs, ys, indexing="ij")
+
+        for box in [*self._current_layout.walls, *self._current_layout.boxes]:
+            half = box.size[:2] + self._layout_generator.inflation_radius
+            center = box.pos[:2]
+            occupied |= (np.abs(xx - center[0]) <= half[0]) & (np.abs(yy - center[1]) <= half[1])
+
+        for cylinder in self._current_layout.cylinders:
+            radius = float(cylinder.size[0] + self._layout_generator.inflation_radius)
+            center = cylinder.pos[:2]
+            occupied |= (xx - center[0]) ** 2 + (yy - center[1]) ** 2 <= radius * radius
+        return occupied
+
+    def _dijkstra_distance_field(self, occupied: np.ndarray, goal_idx: tuple[int, int]) -> np.ndarray:
+        width, height = occupied.shape
+        distances = np.full_like(occupied, np.inf, dtype=np.float64)
+        distances[goal_idx] = 0.0
+        queue: list[tuple[float, tuple[int, int]]] = [(0.0, goal_idx)]
+        neighbors = (
+            (-1, 0, 1.0),
+            (1, 0, 1.0),
+            (0, -1, 1.0),
+            (0, 1, 1.0),
+            (-1, -1, np.sqrt(2.0)),
+            (-1, 1, np.sqrt(2.0)),
+            (1, -1, np.sqrt(2.0)),
+            (1, 1, np.sqrt(2.0)),
+        )
+
+        while queue:
+            distance, (ix, iy) = heappop(queue)
+            if distance > distances[ix, iy]:
+                continue
+            for dx, dy, multiplier in neighbors:
+                nx = ix + dx
+                ny = iy + dy
+                if nx < 0 or ny < 0 or nx >= width or ny >= height:
+                    continue
+                if occupied[nx, ny]:
+                    continue
+                step = self._layout_generator.grid_resolution * float(multiplier)
+                new_distance = distance + step
+                if new_distance < distances[nx, ny]:
+                    distances[nx, ny] = new_distance
+                    heappush(queue, (new_distance, (nx, ny)))
+        return distances
+
+    def _nearest_finite_geodesic_distance(self, idx: tuple[int, int]) -> float:
+        ix, iy = idx
+        width, height = self._geodesic_distances.shape
+        best = float("inf")
+        max_radius = int(np.ceil(self.cfg.near_obstacle_margin / self._layout_generator.grid_resolution))
+        for radius in range(1, max_radius + 1):
+            xmin = max(0, ix - radius)
+            xmax = min(width, ix + radius + 1)
+            ymin = max(0, iy - radius)
+            ymax = min(height, iy + radius + 1)
+            window = self._geodesic_distances[xmin:xmax, ymin:ymax]
+            finite = np.isfinite(window)
+            if not finite.any():
+                continue
+            local_idxs = np.argwhere(finite)
+            for local_ix, local_iy in local_idxs:
+                gx = xmin + int(local_ix)
+                gy = ymin + int(local_iy)
+                offset = self._layout_generator.grid_resolution * float(np.hypot(gx - ix, gy - iy))
+                best = min(best, float(self._geodesic_distances[gx, gy]) + offset)
+            return best
+        return best
 
     def _has_collision(self) -> bool:
         return self._collision_type() in ("static", "dynamic")
