@@ -242,6 +242,11 @@ class Logger:
 				"episode_collision",
 				"episode_static_collision",
 				"episode_dynamic_collision",
+				"episode_length",
+				"episode_timeout",
+				"episode_final_euclidean_distance",
+				"episode_final_geodesic_distance",
+				"episode_final_reward_distance",
 			]
 			self._eval.append([d.get(k, float('nan')) for k in keys])
 			pd.DataFrame(self._eval).to_csv(
@@ -255,6 +260,11 @@ class Logger:
 				"episode_collision",
 				"episode_static_collision",
 				"episode_dynamic_collision",
+				"episode_length",
+				"episode_timeout",
+				"episode_final_euclidean_distance",
+				"episode_final_geodesic_distance",
+				"episode_final_reward_distance",
 			]
 			row = [d.get(k, float('nan')) for k in train_keys]
 			if not hasattr(self, '_train'):
