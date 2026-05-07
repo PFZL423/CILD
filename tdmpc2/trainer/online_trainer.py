@@ -27,8 +27,8 @@ class OnlineTrainer(Trainer):
 
 	def eval(self):
 		"""Evaluate a TD-MPC2 agent."""
-		ep_rewards, ep_successes, ep_collisions, ep_static_collisions, ep_dynamic_collisions, ep_lengths = [], [], [], [], [], []
-		ep_final_euclidean_distances, ep_final_geodesic_distances, ep_final_reward_distances, ep_timeouts = [], [], [], []
+		ep_rewards, ep_successes, ep_lengths = [], [], []
+		ep_costs, ep_goal_reached_counts = [], []
 		for i in range(self.cfg.eval_episodes):
 			obs, done, ep_reward, t = self.env.reset(), False, 0, 0
 			if self.cfg.save_video:
@@ -42,28 +42,21 @@ class OnlineTrainer(Trainer):
 				if self.cfg.save_video:
 					self.logger.video.record(self.env)
 			ep_rewards.append(ep_reward)
-			ep_successes.append(info['success'])
-			ep_collisions.append(info['collision_total'])
-			ep_static_collisions.append(info.get('static_collision_total', 0.0))
-			ep_dynamic_collisions.append(info.get('dynamic_collision_total', 0.0))
+			# `success` here is a per-step flag from the wrapper; on Safety
+			# Gymnasium goal tasks the goal respawns, so the per-episode
+			# meaningful summary is goal_reached_count, not success.
+			ep_successes.append(info.get('success', 0.0))
 			ep_lengths.append(t)
-			ep_final_euclidean_distances.append(info.get('euclidean_distance_to_goal', np.nan))
-			ep_final_geodesic_distances.append(info.get('geodesic_distance_to_goal', np.nan))
-			ep_final_reward_distances.append(info.get('reward_distance_to_goal', np.nan))
-			ep_timeouts.append(info.get('timeout', 0.0))
+			ep_costs.append(info.get('cost_total', 0.0))
+			ep_goal_reached_counts.append(info.get('goal_reached_count', 0.0))
 			if self.cfg.save_video:
 				self.logger.video.save(self._step)
 		return dict(
 			episode_reward=np.nanmean(ep_rewards),
 			episode_success=np.nanmean(ep_successes),
-			episode_collision=np.nanmean(ep_collisions),
-			episode_static_collision=np.nanmean(ep_static_collisions),
-			episode_dynamic_collision=np.nanmean(ep_dynamic_collisions),
-			episode_length= np.nanmean(ep_lengths),
-			episode_final_euclidean_distance=np.nanmean(ep_final_euclidean_distances),
-			episode_final_geodesic_distance=np.nanmean(ep_final_geodesic_distances),
-			episode_final_reward_distance=np.nanmean(ep_final_reward_distances),
-			episode_timeout=np.nanmean(ep_timeouts),
+			episode_length=np.nanmean(ep_lengths),
+			episode_cost=np.nanmean(ep_costs),
+			episode_goal_reached_count=np.nanmean(ep_goal_reached_counts),
 		)
 
 	def to_td(self, obs, action=None, reward=None, terminated=None):
@@ -108,16 +101,12 @@ class OnlineTrainer(Trainer):
 						'Set `episodic=true` to enable support for terminations.')
 					train_metrics.update(
 						episode_reward=torch.tensor([td['reward'] for td in self._tds[1:]]).sum(),
-						episode_success=info['success'],
-						episode_collision=info['collision_total'],
-						episode_static_collision=info.get('static_collision_total', 0.0),
-						episode_dynamic_collision=info.get('dynamic_collision_total', 0.0),
+						episode_success=info.get('success', 0.0),
 						episode_length=len(self._tds),
 						episode_terminated=info['terminated'],
-						episode_timeout=info.get('timeout', 0.0),
-						episode_final_euclidean_distance=info.get('euclidean_distance_to_goal', np.nan),
-						episode_final_geodesic_distance=info.get('geodesic_distance_to_goal', np.nan),
-						episode_final_reward_distance=info.get('reward_distance_to_goal', np.nan))
+						episode_cost=info.get('cost_total', 0.0),
+						episode_goal_reached_count=info.get('goal_reached_count', 0.0),
+					)
 					train_metrics.update(self.common_metrics())
 					self.logger.log(train_metrics, 'train')
 					self._ep_idx = self.buffer.add(torch.cat(self._tds))
