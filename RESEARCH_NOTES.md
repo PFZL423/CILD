@@ -269,3 +269,76 @@ SafetyPointGoal1-v0, model_size=1, steps=6000, seed=1, compile=false
 - 不论结果好坏都诚实记录 — 这是实验观测，不是要"安排"的目标
 
 *Last updated: 2026-05-07 evening*
+
+---
+
+## 2026-05-07 续：Metric 扩展 + 第一波 baseline 启动
+
+晚上把"日志只有 R/S/C/G 四列"扩展为更细的 motivation 证据，并在 4 卡上挂起了第一批 baseline 训练。
+
+### Metric 扩展（commit `ba1c734`）
+
+之前只看 episode_cost 总值，看不出 agent 是"贴 hazard 边走"还是"撞 vase"。新增：
+
+| 字段 | 含义 | 哪些任务有 |
+|---|---|---|
+| `episode_cost_hazards` | 几何危险区累积惩罚（连续值） | G1 / G2 / CarGoal1 |
+| `episode_cost_vases_contact` | 撞 vase 的接触 cost | **只 G2 有** |
+| `episode_cost_vases_velocity` | 撞 vase 把 vase 推动的 cost | **只 G2 有** |
+| `episode_in_hazard_steps` | agent 中心点在 hazard 半径内的步数（binary 计数） | G1 / G2 / CarGoal1 |
+| `episode_final_goal_distance` | episode 结束时离 goal 的距离 | 全部 |
+
+console 实时显示精简成 `R / C / G / D`（dropped S，因为在 continuing task 上 per-step success 噪声很大）。
+
+### 重要的概念校正
+
+**Hazards 不是物理碰撞物**：`contype=0, conaffinity=0`，agent 直接穿过。`cost_hazards = 1.0 * (0.2 - h_dist)` 是**几何距离惩罚**，不是"撞墙次数"。**只有 vases（PointGoal2）才是真正的物理碰撞物**。所以 G1 vs G2 的真实差异是"agent 在违规几何区里走 vs 真物理碰撞"。
+
+**Goal 世界没有围墙**：random init policy 容易飞远，初期 `final_goal_distance=20+` 是**真实环境行为，不是 bug**。baseline 学会的标志之一：D 从 ~20 降到 ~3 以内。
+
+### Model size 决策
+
+TD-MPC2 paper 在 single-task benchmark 用 `model_size=5`（~5M 参数），不是 317（multi-task 才用）。决定主跑 size=5，理由：
+- 是 paper 自己的 single-task 默认配置 — 最不容易被审稿质疑
+- 不需要 size=317：故事是"latent 结构性受限"，不是"参数不够"。如果 size=317 突然学会，反而毁掉 motivation
+- size=1 太小，会被质疑 capacity 不足
+
+### Baseline 训练启动（远程 4 卡 2080 Ti）
+
+23:37-23:41 启动，tmux session, 每个 run 500k 步：
+
+| GPU | 任务 | seed | exp_name |
+|---|---|---|---|
+| 0 | SafetyPointGoal1-v0 | 1 | baseline_m5_seed1 |
+| 1 | SafetyPointGoal2-v0 | 1 | baseline_m5_seed1 |
+| 2 | SafetyCarGoal1-v0 | 1 | baseline_m5_seed1 |
+| 3 | SafetyPointGoal1-v0 | 2 | baseline_m5_seed2 |
+
+参数：`model_size=5, eval_freq=10000, eval_episodes=5, compile=false, save_agent=true`。
+
+### Pretrain 后第一个 episode 已经显示出 motivation 信号
+
+PointGoal2 train.csv step=6000（pretrain 刚结束）：
+```
+R=1.59  cost=351  hazards=36  vases_contact=75  vases_velocity=314  D=2.59
+```
+
+TD-MPC2 已经学到"朝 goal 走"（R 升、D 短），但**完全不看 cost**：撞 vases 撞得猛（vases_velocity=314），完全为了 reward 不顾安全约束。这正是 CILD 想解决的：latent 没编码 cost 信息，planner 没用 cost 约束。
+
+是早期信号，最终 baseline 表现要看 50k 步后稳定下来的 eval.csv。
+
+### 工程小坑记录
+
+- `pip install ... | tee` 不接文件名会让 shell 卡住等输入，**tee 后必须有文件名**
+- python 输出 piped 进 tee 时变成 block-buffered，console 显示延迟（不影响训练）。要实时输出加 `python -u`
+- 当前 CILD conda env 里的 pytorch 是 2.1.1（不是 nightly 2.6），用两行 monkey-patch 兼容（已 commit）。**不需要升级 torch**：smoke + sanity 都通过，强行升 torch.compile 行为变化反而风险大
+- 远程环境是 `yha`（不是 `CILD`），名字不重要，包齐就行
+
+### 还没做的
+
+- 正式 baseline 还没结束（4 个 run 在跑，预估 6-12 小时）
+- 第二、三 seed 没启动 — 等明早第一波数据出来再决定
+- mushr 在 legacy/，等 motivation 跑完再说复现
+- environment.yaml 还不算"可完整复现" — 等下次需要 clean rebuild 时再修
+
+*Last updated: 2026-05-07 night*
