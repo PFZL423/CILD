@@ -2,7 +2,7 @@ defaults:
     - override hydra/launcher: submitit_local
 
 # environment
-task: dog-run
+task: SafetyPointGoal1-v0
 obs: state
 episodic: false
 

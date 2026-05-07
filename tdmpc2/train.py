@@ -38,9 +38,9 @@ def train(cfg: dict):
 
 	Example usage:
 	```
-		$ python train.py task=mt80 model_size=48
-		$ python train.py task=mt30 model_size=317
-		$ python train.py task=dog-run steps=7000000
+		$ python train.py task=SafetyPointGoal1-v0 steps=500000
+		$ python train.py task=SafetyPointGoal2-v0 steps=500000 seed=2
+		$ python train.py task=SafetyCarGoal1-v0 model_size=5
 	```
 	"""
 	assert torch.cuda.is_available()

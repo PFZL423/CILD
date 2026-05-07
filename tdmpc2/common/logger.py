@@ -8,7 +8,6 @@ import numpy as np
 import pandas as pd
 from termcolor import colored
 
-from common import TASK_SET
 
 
 CONSOLE_FORMAT = [
@@ -194,34 +193,33 @@ class Logger:
 		print("   ".join(pieces))
 
 	def pprint_multitask(self, d, cfg):
-		"""Pretty-print evaluation metrics for multi-task training."""
+		"""Pretty-print evaluation metrics for multi-task training.
+
+		Generic per-task reward + global average. The original implementation
+		split benchmarks into dmcontrol / metaworld groups; that grouping was
+		removed when those benchmarks were dropped from the project.
+		"""
 		print(colored(f'Evaluated agent on {len(cfg.tasks)} tasks:', 'yellow', attrs=['bold']))
-		dmcontrol_reward = []
-		metaworld_reward = []
-		metaworld_success = []
+		rewards = []
+		successes = []
 		for k, v in d.items():
 			if '+' not in k:
 				continue
 			task = k.split('+')[1]
-			if task in TASK_SET['mt30'] and k.startswith('episode_reward'): # DMControl
-				dmcontrol_reward.append(v)
+			if k.startswith('episode_reward'):
+				rewards.append(v)
 				print(colored(f'  {task:<22}\tR: {v:.01f}', 'yellow'))
-			elif task in TASK_SET['mt80'] and task not in TASK_SET['mt30']: # Meta-World
-				if k.startswith('episode_reward'):
-					metaworld_reward.append(v)
-				elif k.startswith('episode_success'):
-					metaworld_success.append(v)
-					print(colored(f'  {task:<22}\tS: {v:.02f}', 'yellow'))
-		dmcontrol_reward = np.nanmean(dmcontrol_reward)
-		d['episode_reward+avg_dmcontrol'] = dmcontrol_reward
-		print(colored(f'  {"dmcontrol":<22}\tR: {dmcontrol_reward:.01f}', 'yellow', attrs=['bold']))
-		if cfg.task == 'mt80':
-			metaworld_reward = np.nanmean(metaworld_reward)
-			metaworld_success = np.nanmean(metaworld_success)
-			d['episode_reward+avg_metaworld'] = metaworld_reward
-			d['episode_success+avg_metaworld'] = metaworld_success
-			print(colored(f'  {"metaworld":<22}\tR: {metaworld_reward:.01f}', 'yellow', attrs=['bold']))
-			print(colored(f'  {"metaworld":<22}\tS: {metaworld_success:.02f}', 'yellow', attrs=['bold']))
+			elif k.startswith('episode_success'):
+				successes.append(v)
+				print(colored(f'  {task:<22}\tS: {v:.02f}', 'yellow'))
+		if rewards:
+			avg_reward = np.nanmean(rewards)
+			d['episode_reward+avg'] = avg_reward
+			print(colored(f'  {"avg":<22}\tR: {avg_reward:.01f}', 'yellow', attrs=['bold']))
+		if successes:
+			avg_success = np.nanmean(successes)
+			d['episode_success+avg'] = avg_success
+			print(colored(f'  {"avg":<22}\tS: {avg_success:.02f}', 'yellow', attrs=['bold']))
 
 	def log(self, d, category="train"):
 		assert category in CAT_TO_COLOR.keys(), f"invalid category: {category}"
