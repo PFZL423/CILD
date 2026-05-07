@@ -35,10 +35,14 @@ TASK_COLORS = {
 
 # (csv_column, panel title, panel y-label)
 PANELS = [
-	('episode_reward',             'Episode Reward (R)',          'reward'),
-	('episode_cost',               'Episode Cost (C)',            'cost'),
-	('episode_goal_reached_count', 'Goals Reached / Episode (G)', 'count'),
-	('episode_success',            'Per-Step Success Rate (S)',   'fraction'),
+	('episode_reward',              'Episode Reward (R)',          'reward'),
+	('episode_cost',                'Episode Cost total (C)',      'cost'),
+	('episode_goal_reached_count',  'Goals Reached / Episode (G)', 'count'),
+	('episode_final_goal_distance', 'Final Goal Distance (D)',     'meters'),
+	('episode_cost_hazards',        'Cost: hazards',               'cost'),
+	('episode_in_hazard_steps',     'Steps inside any hazard',     'steps'),
+	('episode_cost_vases_contact',  'Cost: vases contact (G2)',    'cost'),
+	('episode_cost_vases_velocity', 'Cost: vases velocity (G2)',   'cost'),
 ]
 
 
@@ -56,7 +60,10 @@ def load_csv(path):
 			df['episode_reward'].astype(str).str.extract(r'([-\d.]+)')[0],
 			errors='coerce',
 		)
-	for col in ('episode_cost', 'episode_goal_reached_count', 'episode_success'):
+	for col in ('episode_cost', 'episode_cost_hazards', 'episode_cost_vases_contact',
+	            'episode_cost_vases_velocity', 'episode_in_hazard_steps',
+	            'episode_goal_reached_count', 'episode_success',
+	            'episode_final_goal_distance'):
 		if col in df.columns:
 			df[col] = pd.to_numeric(df[col], errors='coerce')
 	return df
@@ -119,9 +126,11 @@ def main():
 	if args.out:
 		args.no_loop = True
 
-	if not args.no_loop:
+	if args.no_loop:
+		plt.ioff()
+	else:
 		plt.ion()
-	fig, axes = plt.subplots(2, 2, figsize=(13, 9))
+	fig, axes = plt.subplots(4, 2, figsize=(13, 14))
 
 	if args.no_loop:
 		render(fig, axes, args.tasks, args.exp, args.source, args.smooth)

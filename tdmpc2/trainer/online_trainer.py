@@ -29,6 +29,8 @@ class OnlineTrainer(Trainer):
 		"""Evaluate a TD-MPC2 agent."""
 		ep_rewards, ep_successes, ep_lengths = [], [], []
 		ep_costs, ep_goal_reached_counts = [], []
+		ep_cost_hazards, ep_cost_vases_c, ep_cost_vases_v = [], [], []
+		ep_in_hazard_steps, ep_final_goal_dist = [], []
 		for i in range(self.cfg.eval_episodes):
 			obs, done, ep_reward, t = self.env.reset(), False, 0, 0
 			if self.cfg.save_video:
@@ -49,6 +51,11 @@ class OnlineTrainer(Trainer):
 			ep_lengths.append(t)
 			ep_costs.append(info.get('cost_total', 0.0))
 			ep_goal_reached_counts.append(info.get('goal_reached_count', 0.0))
+			ep_cost_hazards.append(info.get('cost_hazards_total', 0.0))
+			ep_cost_vases_c.append(info.get('cost_vases_contact_total', 0.0))
+			ep_cost_vases_v.append(info.get('cost_vases_velocity_total', 0.0))
+			ep_in_hazard_steps.append(info.get('in_hazard_steps', 0.0))
+			ep_final_goal_dist.append(info.get('final_goal_distance', float('nan')))
 			if self.cfg.save_video:
 				self.logger.video.save(self._step)
 		return dict(
@@ -56,7 +63,12 @@ class OnlineTrainer(Trainer):
 			episode_success=np.nanmean(ep_successes),
 			episode_length=np.nanmean(ep_lengths),
 			episode_cost=np.nanmean(ep_costs),
+			episode_cost_hazards=np.nanmean(ep_cost_hazards),
+			episode_cost_vases_contact=np.nanmean(ep_cost_vases_c),
+			episode_cost_vases_velocity=np.nanmean(ep_cost_vases_v),
+			episode_in_hazard_steps=np.nanmean(ep_in_hazard_steps),
 			episode_goal_reached_count=np.nanmean(ep_goal_reached_counts),
+			episode_final_goal_distance=np.nanmean(ep_final_goal_dist),
 		)
 
 	def to_td(self, obs, action=None, reward=None, terminated=None):
@@ -105,7 +117,12 @@ class OnlineTrainer(Trainer):
 						episode_length=len(self._tds),
 						episode_terminated=info['terminated'],
 						episode_cost=info.get('cost_total', 0.0),
+						episode_cost_hazards=info.get('cost_hazards_total', 0.0),
+						episode_cost_vases_contact=info.get('cost_vases_contact_total', 0.0),
+						episode_cost_vases_velocity=info.get('cost_vases_velocity_total', 0.0),
+						episode_in_hazard_steps=info.get('in_hazard_steps', 0.0),
 						episode_goal_reached_count=info.get('goal_reached_count', 0.0),
+						episode_final_goal_distance=info.get('final_goal_distance', float('nan')),
 					)
 					train_metrics.update(self.common_metrics())
 					self.logger.log(train_metrics, 'train')

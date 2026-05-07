@@ -15,9 +15,9 @@ CONSOLE_FORMAT = [
 	("episode", "E", "int"),
 	("step", "I", "int"),
 	("episode_reward", "R", "float"),
-	("episode_success", "S", "float"),
 	("episode_cost", "C", "float"),
 	("episode_goal_reached_count", "G", "float"),
+	("episode_final_goal_distance", "D", "float"),
 	("elapsed_time", "T", "time"),
 ]
 
@@ -241,7 +241,12 @@ class Logger:
 				"episode_success",
 				"episode_length",
 				"episode_cost",
+				"episode_cost_hazards",
+				"episode_cost_vases_contact",
+				"episode_cost_vases_velocity",
+				"episode_in_hazard_steps",
 				"episode_goal_reached_count",
+				"episode_final_goal_distance",
 			]
 			self._eval.append([d.get(k, float('nan')) for k in keys])
 			pd.DataFrame(self._eval).to_csv(
@@ -254,7 +259,12 @@ class Logger:
 				"episode_success",
 				"episode_length",
 				"episode_cost",
+				"episode_cost_hazards",
+				"episode_cost_vases_contact",
+				"episode_cost_vases_velocity",
+				"episode_in_hazard_steps",
 				"episode_goal_reached_count",
+				"episode_final_goal_distance",
 			]
 			row = [d.get(k, float('nan')) for k in train_keys]
 			if not hasattr(self, '_train'):

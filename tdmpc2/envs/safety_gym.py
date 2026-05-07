@@ -43,14 +43,26 @@ class SafetyGymnasiumWrapper(gym.Wrapper):
 		super().__init__(env)
 		self.env = env
 		self.cfg = cfg
-		# Used to populate info['success'] without requiring a 'success' key
-		# from the underlying env. Reset on each reset().
+		# Per-episode accumulators. Reset on each reset().
 		self._goal_reached_count = 0
 		self._cost_total = 0.0
+		self._cost_hazards_total = 0.0
+		self._cost_vases_contact_total = 0.0
+		self._cost_vases_velocity_total = 0.0
+		# Steps where the agent's center sits inside *any* hazard radius.
+		# Different from cost_hazards (which is a continuous distance penalty).
+		self._in_hazard_steps = 0
+		# Updated each step; the trainer reads it at episode end.
+		self._last_dist_goal = float('nan')
 
 	def reset(self):
 		self._goal_reached_count = 0
 		self._cost_total = 0.0
+		self._cost_hazards_total = 0.0
+		self._cost_vases_contact_total = 0.0
+		self._cost_vases_velocity_total = 0.0
+		self._in_hazard_steps = 0
+		self._last_dist_goal = float('nan')
 		obs, _info = self.env.reset()
 		# safety-gymnasium returns float64; let TensorWrapper handle the cast
 		return obs
@@ -64,13 +76,42 @@ class SafetyGymnasiumWrapper(gym.Wrapper):
 		)
 		done = bool(terminated or truncated)
 
+		task = self.env.unwrapped.task
+
 		# Read goal_achieved from the underlying task object. This is the
 		# per-step "the agent reached the goal this step" flag — a goal env
 		# can be reached multiple times per episode (the goal respawns).
-		goal_reached = bool(getattr(self.env.unwrapped.task, 'goal_achieved', False))
+		goal_reached = bool(getattr(task, 'goal_achieved', False))
 		if goal_reached:
 			self._goal_reached_count += 1
 		self._cost_total += float(cost)
+
+		# Decompose cost by source. Different tasks expose different keys:
+		#   PointGoal1 / CarGoal1 → only cost_hazards
+		#   PointGoal2            → cost_hazards + cost_vases_contact + cost_vases_velocity
+		# Use .get with default 0.0 so missing keys are treated as zero.
+		c_hazards = float(info.get('cost_hazards', 0.0))
+		c_vases_contact = float(info.get('cost_vases_contact', 0.0))
+		c_vases_velocity = float(info.get('cost_vases_velocity', 0.0))
+		self._cost_hazards_total += c_hazards
+		self._cost_vases_contact_total += c_vases_contact
+		self._cost_vases_velocity_total += c_vases_velocity
+
+		# Whether the agent center is inside *any* hazard radius this step.
+		# This is a binary event count, complementary to cost_hazards (which
+		# weights by how deep into the hazard the agent is).
+		if c_hazards > 0.0:
+			self._in_hazard_steps += 1
+
+		# Distance to the (possibly respawned) goal at the end of this step.
+		# `dist_goal()` is a method on the task object.
+		# Note: Goal worlds are open (no walls), so an unconstrained random
+		# policy can drift far from the placement region. Don't be alarmed
+		# if early-training final_goal_distance is in the tens of meters.
+		try:
+			self._last_dist_goal = float(task.dist_goal())
+		except Exception:
+			self._last_dist_goal = float('nan')
 
 		# Fields TensorWrapper requires:
 		#   info['success']    — per-step bool/float
@@ -81,7 +122,12 @@ class SafetyGymnasiumWrapper(gym.Wrapper):
 		info['terminated'] = bool(terminated)
 		info['cost'] = float(cost)
 		info['cost_total'] = float(self._cost_total)
+		info['cost_hazards_total'] = float(self._cost_hazards_total)
+		info['cost_vases_contact_total'] = float(self._cost_vases_contact_total)
+		info['cost_vases_velocity_total'] = float(self._cost_vases_velocity_total)
+		info['in_hazard_steps'] = float(self._in_hazard_steps)
 		info['goal_reached_count'] = float(self._goal_reached_count)
+		info['final_goal_distance'] = float(self._last_dist_goal)
 
 		return obs, reward, done, info
 
