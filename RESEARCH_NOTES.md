@@ -226,3 +226,46 @@
 ---
 
 *Last updated: 2026-05-06 night*
+
+---
+
+## 2026-05-07 重构日：Codebase 切换到 Safety Gymnasium
+
+按照 2026-05-06 的认知突破，今天把仓库从"自造 mushr 环境"重构为"Safety Gymnasium benchmark"路线。
+
+### 关键决定
+
+1. **mushr_nav 归档到 `legacy/`**，不删除 — 实验3（泛化展示）会用到
+2. **彻底剥离非导航 benchmark 代码** — dm_control / metaworld / maniskill / myosuite / mujoco 全部删除（共 ~1100 行 envs/tasks/ + 5 个 envs 模块 + evaluate_oracle.py）
+   - 理由：与 navigation/avoidance 研究无关；safety-gymnasium 1.0 与 dm-control 1.0.16 在 mujoco/gymnasium 版本上死锁，无法共存
+3. **用默认 cfg 跑 baseline** — 不再带 mushr 调出来的 discount/reward_coef/vmin/vmax 等覆盖
+4. **目标 benchmark 三任务**：SafetyPointGoal1-v0（静态）、SafetyPointGoal2-v0（动态）、SafetyCarGoal1-v0（不同形态）
+
+### 工程细节
+
+- `tdmpc2/envs/safety_gym.py`：薄 wrapper，把 safety-gymnasium 6-tuple step `(obs, reward, cost, term, trunc, info)` 适配为 TD-MPC2 期望的 4-tuple `(obs, reward, done, info)`
+- cost 经 info 透传（CILD 的 risk head 后续会用）
+- per-step success 来自 `env.unwrapped.task.goal_achieved`（goal 任务是 continuing，goal 会重生）
+- pytorch 2.1 兼容补丁（TD-MPC2 公开版假设 pytorch 2.5+）：
+  - `torch.nn.Buffer(...)` → `register_buffer(...)`（`common/scale.py`、`tdmpc2.py`）
+  - `torch.compiler.cudagraph_mark_step_begin` 缺失时 monkey-patch 成 no-op（`tdmpc2.py`）
+
+### Smoke test 结果（2026-05-07）
+
+```
+SafetyPointGoal1-v0, model_size=1, steps=6000, seed=1, compile=false
+  eval E=0  I=0     R=-20.7   (random init)
+  eval E=2  I=3000  R=-20.9
+  eval E=5  I=6000  R= 6.0    (after pretrain on seed data)
+  Training completed successfully
+```
+
+**意义**：pipeline 完全打通 — wrapper、buffer、模型 forward/backward、planner、log 都正常工作。R 从 -20 → +6 说明梯度更新有效。这只是 6k 步的可行性验证，**不是 baseline 数据**；正式 baseline 要跑 500k 步、3 seed × 3 任务。
+
+### 下一步
+
+- 跑正式 motivation baseline：每个任务 500k 步、3 seed
+- 收集 episode_reward / cost_total / goal_reached_count 三个核心指标
+- 不论结果好坏都诚实记录 — 这是实验观测，不是要"安排"的目标
+
+*Last updated: 2026-05-07 evening*

@@ -8,6 +8,13 @@ from common.layers import api_model_conversion
 from tensordict import TensorDict
 
 
+# Compatibility shim: torch.compiler.cudagraph_mark_step_begin was added in
+# pytorch 2.3. On older pytorch (e.g. 2.1) it doesn't exist; the call is only
+# meaningful with torch.compile + cudagraphs anyway, so a no-op is fine.
+if not hasattr(torch.compiler, 'cudagraph_mark_step_begin'):
+	torch.compiler.cudagraph_mark_step_begin = lambda: None
+
+
 class TDMPC2(torch.nn.Module):
 	"""
 	TD-MPC2 agent. Implements training + inference.
@@ -38,7 +45,7 @@ class TDMPC2(torch.nn.Module):
 		) if self.cfg.multitask else self._get_discount(cfg.episode_length)
 		print('Episode length:', cfg.episode_length)
 		print('Discount factor:', self.discount)
-		self._prev_mean = torch.nn.Buffer(torch.zeros(self.cfg.horizon, self.cfg.action_dim, device=self.device))
+		self.register_buffer('_prev_mean', torch.zeros(self.cfg.horizon, self.cfg.action_dim, device=self.device))
 		if cfg.compile:
 			print('Compiling update function with torch.compile...')
 			self._update = torch.compile(self._update, mode="reduce-overhead")
