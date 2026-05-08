@@ -78,10 +78,12 @@ class SafetyGymnasiumWrapper(gym.Wrapper):
 
 		task = self.env.unwrapped.task
 
-		# Read goal_achieved from the underlying task object. This is the
-		# per-step "the agent reached the goal this step" flag — a goal env
-		# can be reached multiple times per episode (the goal respawns).
-		goal_reached = bool(getattr(task, 'goal_achieved', False))
+		# Whether the agent reached the goal this step. The underlying builder
+		# sets info['goal_met']=True at the moment of achievement, then
+		# immediately respawns the goal — so reading task.goal_achieved AFTER
+		# env.step() has already returned is too late (always False). Use the
+		# info flag the builder leaves behind.
+		goal_reached = bool(info.get('goal_met', False))
 		if goal_reached:
 			self._goal_reached_count += 1
 		self._cost_total += float(cost)
