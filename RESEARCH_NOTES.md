@@ -342,3 +342,97 @@ TD-MPC2 已经学到"朝 goal 走"（R 升、D 短），但**完全不看 cost**
 - environment.yaml 还不算"可完整复现" — 等下次需要 clean rebuild 时再修
 
 *Last updated: 2026-05-07 night*
+
+---
+
+## 2026-05-08 motivation 闭环 + CILD 主线开工
+
+### 早上拿到的 baseline 数据（500k steps × 3 任务，vanilla）
+
+| 任务 | R | cost | cost gap vs G1 |
+|---|---|---|---|
+| SafetyPointGoal1（静态） | 26 | ~60 | 1× baseline |
+| SafetyCarGoal1（不同 morphology, 静态） | 35 | ~60-75 | 1.1× |
+| SafetyPointGoal2（动态 vases） | 24 | **~150-170** | **2.7×** |
+
+**核心 finding**：
+- 同一个 TD-MPC2，静态 → 动态 reward 学习几乎不变（R: 26 → 24，仅 -8%）
+- 但 cost 从静态 60 飙到动态 170（**2.7× gap**）
+- G2 cost 增量几乎全部来自 **vases velocity**（撞动态物体把 vase 推飞，velocity penalty 累积）
+- TD-MPC2 的 latent **没有结构性编码动态障碍物**，agent 在 planner 里 treat dynamic obstacles as noise
+
+这是 paper Section 3 Motivation 的核心数据。
+
+### 已知 wrapper bug（不影响 motivation 解读）
+
+`goal_reached_count` 在所有 vanilla run 里都是 0。Root cause：safety-gymnasium builder 在
+`task.goal_achieved` 检测后**立即** respawn goal，wrapper 在 step() 返回后再读
+`task.goal_achieved` 永远是 False。修复：读 `info['goal_met']`（commit `b55e34f`，本地未 push）。
+
+实际 success 可从 R 反推（每次 goal 达成 ≈ 2-2.5 reward → R=26 ≈ 12-13 goals/episode）。
+
+### 与学长讨论的两个 take-away
+
+1. **motivation 已成立，做最后一次 reward-shaping 对照实验，然后转入 CILD 主线**（不死磕 motivation）
+2. **+λ baseline 是对照组，不是 CILD 的备选方案** — 即使 +λ 学会减 cost，CILD 仍然走"latent + planner 结构化处理 cost"的路线，价值在于不调 λ + structured planning capability（gradient sampling, hard pruning, OOD horizon）
+
+### 下一步计划（按时间）
+
+#### 今晚（5/8）
+1. **修复 wrapper push 到远程**（commit `b55e34f` 已本地，需 push）
+2. **用修复后 wrapper 重跑 evaluate.py 在已 saved checkpoints 上**（5 分钟，确认 success rate 和 R 一致）
+3. **实现 `cost_lambda` 参数**（在 `envs/safety_gym.py` 的 step() 加一行：
+   `shaped_reward = reward - cfg.get('cost_lambda', 0.0) * float(cost)`，config.yaml 加默认 0.0）
+4. **启动 4 卡 +λ baseline**（这是 motivation 最后一次实验）
+   - GPU 0: PointGoal1 + λ=1
+   - GPU 1: PointGoal1 + λ=10
+   - GPU 2: PointGoal2 + λ=1
+   - GPU 3: PointGoal2 + λ=10
+   - 不跑 CarGoal1（与 G1 趋势相似，省卡）
+   - 不跑多 seed（节省精力给 CILD）
+
+#### 本周
+- 整理 Fig 1（vanilla + +λ）给学长
+- 开始 CILD 第一版：**risk head only**（最简单，监督信号 = 未来 H 步内是否进 hazard 区，可以从 simulator 回溯）
+
+#### 后续
+- 阶段 2 (2-3 周)：risk head 接入 MPPI cost 做第一次 CILD vs vanilla 对比
+- 阶段 3 (1-2 月)：加 progress + occupancy + gradient sampling + hard pruning + OOD horizon
+- 阶段 4 (2027/01-02)：写 paper
+- 投 **IROS 2027**（deadline 2027/03 月初）
+
+### λ 选择的依据
+
+reward 单步量级 ~0.01-0.05，cost 单步量级 ~0-0.2（hazards）/ 偶尔 1+（vases）。
+- λ=1：与 reward shaping 同量级，文献常用中性选择
+- λ=10：cost penalty 显著大于 reward 信号，强逼避障
+- 不选 λ=0.1（信号被 reward shaping 淹没）/ λ=100（会把 reward 信号完全压垮）
+
+预期结果：
+```
+任务         R(vanilla) → R(+λ=1) → R(+λ=10)        cost: 60 → 30-50 → 5-15
+PointGoal1   26 → 18-22 → 5-12                      
+PointGoal2   24 → 15-20 → 3-10                      170 → 80-130 → 15-40
+```
+
+任何结果都对 motivation 有利：要么"+λ 也救不了 latent 缺陷"（极强 motivation），
+要么"+λ 必须显式调到 10 倍才有效"（"CILD 不需调 λ"作为差异化卖点）。
+
+### 关键认知（不要忘记）
+
+**cost 减小应该是架构问题，不是 reward 加权问题**。CILD 的灵魂：
+- benchmark 解耦 R 和 cost（CMDP 标准），不替方法选 λ
+- vanilla TD-MPC2 latent 完全 cost-blind（已验证）
+- +λ 是 functional patch（reward shaping），不是 structural fix
+- CILD 通过 cost-informed latent + structured planner 做 architectural 改进
+
+3 句话 paper 主张（草稿）：
+> Existing latent world models optimize reward through latent dynamics, but treat safety
+> cost as a separate scalar. We argue representation learning and planner cost design
+> must be co-designed: latent must structurally encode cost geometry; planner must
+> directly consume these structures. CILD adds three planner-coupled prediction heads
+> whose loss backpropagates through the latent transition chain, exposing structured
+> cost to gradient-informed sampling, hard safety constraints, and OOD-aware horizon
+> adaptation — capabilities scalar cost penalty cannot provide.
+
+*Last updated: 2026-05-08 noon*
