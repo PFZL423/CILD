@@ -76,6 +76,14 @@ class SafetyGymnasiumWrapper(gym.Wrapper):
 		)
 		done = bool(terminated or truncated)
 
+		# Optional reward shaping: reward <- reward - lambda * cost.
+		# lambda=0 (default) recovers the vanilla baseline. Non-zero values
+		# are the control experiment for CILD's motivation -- showing that
+		# naive scalar shaping is not a structural fix for cost-aware planning.
+		cost_lambda = float(getattr(self.cfg, 'cost_lambda', 0.0))
+		if cost_lambda != 0.0:
+			reward = float(reward) - cost_lambda * float(cost)
+
 		task = self.env.unwrapped.task
 
 		# Whether the agent reached the goal this step. The underlying builder

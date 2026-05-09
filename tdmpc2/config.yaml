@@ -5,6 +5,7 @@ defaults:
 task: SafetyPointGoal1-v0
 obs: state
 episodic: false
+cost_lambda: 0.0  # reward shaping: reward <- reward - cost_lambda * cost (control experiment for CILD motivation)
 
 # evaluation
 checkpoint: ???
