@@ -91,20 +91,36 @@ def make_env(cfg):
 	Make an IsaacLab DirectRLEnv and adapt it to TD-MPC2's batched torch vec env API.
 
 	Expected cfg fields:
-		cfg.task: Gymnasium id, e.g. "Isaac-Cartpole-Direct-v0".
+		cfg.task: Gymnasium id, e.g. "Isaac-Cartpole-Direct-v0" or "Isaac-CILDNav-v0".
 		cfg.num_envs: Number of IsaacLab sub-environments, default 512.
 		cfg.device: Simulation/tensor device, default "cuda:0".
 	"""
 	if not cfg.task.startswith('Isaac-'):
 		raise ValueError(f'Unknown task {cfg.task}')
 
-	# Register the direct Cartpole task. This import must happen after Isaac Sim's
-	# AppLauncher has started, which is guaranteed by train_isaac.py.
+	# Register tasks. Imports must happen after Isaac Sim's AppLauncher has started.
 	import isaaclab_tasks.direct.cartpole  # noqa: F401
-	from isaaclab_tasks.utils.parse_cfg import parse_env_cfg
+	import envs.tasks.cild_nav  # noqa: F401
 
 	num_envs = int(_get_cfg(cfg, 'num_envs', 512))
 	device = _get_cfg(cfg, 'device', 'cuda:0')
-	env_cfg = parse_env_cfg(cfg.task, device=device, num_envs=num_envs)
+
+	if cfg.task.startswith('Isaac-CILDNav'):
+		from envs.tasks.cild_nav.cild_nav_cfg import CILDNavEnvCfg
+		env_cfg = CILDNavEnvCfg()
+		env_cfg.sim.device = device
+		env_cfg.scene.num_envs = num_envs
+		# Forward obstacle config from TD-MPC2 cfg if present
+		for key in ('obstacle_mode', 'obstacle_speed', 'obstacle_turn_interval',
+		            'terminate_on_collision', 'frame_stack'):
+			val = _get_cfg(cfg, key, None)
+			if val is not None:
+				setattr(env_cfg, key, val)
+		if env_cfg.frame_stack > 1:
+			env_cfg.observation_space = 40 * env_cfg.frame_stack
+	else:
+		from isaaclab_tasks.utils.parse_cfg import parse_env_cfg
+		env_cfg = parse_env_cfg(cfg.task, device=device, num_envs=num_envs)
+
 	env = gym.make(cfg.task, cfg=env_cfg).unwrapped
 	return IsaacVecEnv(env, device)
