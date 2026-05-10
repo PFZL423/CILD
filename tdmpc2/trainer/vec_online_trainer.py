@@ -18,6 +18,7 @@ class VecOnlineTrainer(Trainer):
 		self._update_count = 0
 		self._start_time = time()
 		self._episode_rewards = deque(maxlen=100)
+		self._episode_raw_rewards = deque(maxlen=100)
 		self._episode_lengths = deque(maxlen=100)
 		self._episode_successes = deque(maxlen=100)
 		# Per-episode metric deques (parity with single-env OnlineTrainer).
@@ -50,7 +51,7 @@ class VecOnlineTrainer(Trainer):
 
 	def eval(self):
 		"""Evaluate a TD-MPC2 agent in full-vector rollout batches."""
-		ep_rewards, ep_successes, ep_lengths = [], [], []
+		ep_rewards, ep_raw_rewards, ep_successes, ep_lengths = [], [], [], []
 		ep_costs, ep_ch, ep_cvc, ep_cvv = [], [], [], []
 		ep_ih, ep_gr, ep_fgd = [], [], []
 		num_rollouts = ceil(self.cfg.eval_episodes / self.cfg.num_envs)
@@ -64,7 +65,7 @@ class VecOnlineTrainer(Trainer):
 			# Latest metric snapshot per env (overwritten each step until that
 			# env's first 'done' stops updating it via the active mask).
 			last_metrics = {k: torch.zeros(self.cfg.num_envs, dtype=torch.float32, device=obs.device)
-				for k in ('cost_total', 'cost_hazards_total',
+				for k in ('raw_reward_total', 'cost_total', 'cost_hazards_total',
 					'cost_vases_contact_total', 'cost_vases_velocity_total',
 					'in_hazard_steps', 'goal_reached_count', 'final_goal_distance')}
 			for _ in range(self.cfg.episode_length):
@@ -87,6 +88,7 @@ class VecOnlineTrainer(Trainer):
 				if bool(done_once.all()):
 					break
 			ep_rewards.extend(episode_reward.detach().cpu().tolist())
+			ep_raw_rewards.extend(last_metrics['raw_reward_total'].detach().cpu().tolist())
 			ep_successes.extend(episode_success.detach().cpu().tolist())
 			ep_lengths.extend(episode_length.detach().cpu().tolist())
 			ep_costs.extend(last_metrics['cost_total'].detach().cpu().tolist())
@@ -99,6 +101,7 @@ class VecOnlineTrainer(Trainer):
 		limit = self.cfg.eval_episodes
 		return dict(
 			episode_reward=np.nanmean(ep_rewards[:limit]),
+			episode_raw_reward=np.nanmean(ep_raw_rewards[:limit]),
 			episode_success=np.nanmean(ep_successes[:limit]),
 			episode_length=np.nanmean(ep_lengths[:limit]),
 			episode_cost=np.nanmean(ep_costs[:limit]),
@@ -144,6 +147,7 @@ class VecOnlineTrainer(Trainer):
 				# Per-episode totals are emitted by _SafetyGymShim on every
 				# step; their value at the done step is the episode total.
 				success_cpu = info.get('success', zeros).detach().cpu()
+				raw_cpu = info.get('raw_reward_total', zeros).detach().cpu()
 				cost_cpu = info.get('cost_total', zeros).detach().cpu()
 				ch_cpu = info.get('cost_hazards_total', zeros).detach().cpu()
 				cvc_cpu = info.get('cost_vases_contact_total', zeros).detach().cpu()
@@ -153,6 +157,7 @@ class VecOnlineTrainer(Trainer):
 				fgd_cpu = info.get('final_goal_distance', zeros).detach().cpu()
 				for idx in done_cpu.nonzero(as_tuple=False).flatten().tolist():
 					self._episode_rewards.append(float(reward_cpu[idx]))
+					self._episode_raw_rewards.append(float(raw_cpu[idx]))
 					self._episode_lengths.append(float(length_cpu[idx]))
 					self._episode_successes.append(float(success_cpu[idx]))
 					self._episode_costs.append(float(cost_cpu[idx]))
@@ -183,6 +188,7 @@ class VecOnlineTrainer(Trainer):
 				_nanmean = lambda d: np.nanmean(d) if d else float('nan')
 				metrics = dict(
 					episode_reward=_nanmean(self._episode_rewards),
+					episode_raw_reward=_nanmean(self._episode_raw_rewards),
 					episode_success=_nanmean(self._episode_successes),
 					episode_length=_nanmean(self._episode_lengths),
 					episode_cost=_nanmean(self._episode_costs),

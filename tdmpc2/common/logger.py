@@ -238,6 +238,7 @@ class Logger:
 			keys = [
 				"step",
 				"episode_reward",
+				"episode_raw_reward",
 				"episode_success",
 				"episode_length",
 				"episode_cost",
@@ -256,6 +257,7 @@ class Logger:
 			train_keys = [
 				"step",
 				"episode_reward",
+				"episode_raw_reward",
 				"episode_success",
 				"episode_length",
 				"episode_cost",

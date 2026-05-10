@@ -67,6 +67,7 @@ class _SafetyGymShim(gym.Env):
         self._cost_vases_velocity_total = 0.0
         self._in_hazard_steps = 0
         self._last_dist_goal = float('nan')
+        self._raw_reward_total = 0.0
 
     def reset(self, *, seed=None, options=None):
         self._reset_accumulators()
@@ -77,8 +78,11 @@ class _SafetyGymShim(gym.Env):
         obs, reward, cost, terminated, truncated, info = self._env.step(
             np.asarray(action, dtype=np.float64)
         )
+        raw_reward = float(reward)
         if self._cost_lambda != 0.0:
-            reward = float(reward) - self._cost_lambda * float(cost)
+            reward = raw_reward - self._cost_lambda * float(cost)
+        else:
+            reward = raw_reward
 
         goal_reached = bool(info.get('goal_met', False))
         if goal_reached:
@@ -99,6 +103,9 @@ class _SafetyGymShim(gym.Env):
             self._last_dist_goal = float('nan')
 
         info = dict(info) if info else {}
+        self._raw_reward_total += raw_reward
+        info['raw_reward'] = raw_reward
+        info['raw_reward_total'] = float(self._raw_reward_total)
         info['cost'] = c
         info['cost_total'] = float(self._cost_total)
         info['cost_hazards_total'] = float(self._cost_hazards_total)
@@ -162,6 +169,7 @@ class SafetyGymVecEnv:
     # each scalar key from sub-env info into a length-num_envs np.array; we
     # convert to GPU tensors so VecOnlineTrainer can index by `done` mask.
     _METRIC_KEYS = (
+        'raw_reward_total',
         'cost', 'cost_total',
         'cost_hazards_total',
         'cost_vases_contact_total', 'cost_vases_velocity_total',

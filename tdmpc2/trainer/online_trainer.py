@@ -27,7 +27,7 @@ class OnlineTrainer(Trainer):
 
 	def eval(self):
 		"""Evaluate a TD-MPC2 agent."""
-		ep_rewards, ep_successes, ep_lengths = [], [], []
+		ep_rewards, ep_raw_rewards, ep_successes, ep_lengths = [], [], [], []
 		ep_costs, ep_goal_reached_counts = [], []
 		ep_cost_hazards, ep_cost_vases_c, ep_cost_vases_v = [], [], []
 		ep_in_hazard_steps, ep_final_goal_dist = [], []
@@ -44,6 +44,7 @@ class OnlineTrainer(Trainer):
 				if self.cfg.save_video:
 					self.logger.video.record(self.env)
 			ep_rewards.append(ep_reward)
+			ep_raw_rewards.append(info.get('raw_reward_total', float('nan')))
 			# `success` here is a per-step flag from the wrapper; on Safety
 			# Gymnasium goal tasks the goal respawns, so the per-episode
 			# meaningful summary is goal_reached_count, not success.
@@ -60,6 +61,7 @@ class OnlineTrainer(Trainer):
 				self.logger.video.save(self._step)
 		return dict(
 			episode_reward=np.nanmean(ep_rewards),
+			episode_raw_reward=np.nanmean(ep_raw_rewards),
 			episode_success=np.nanmean(ep_successes),
 			episode_length=np.nanmean(ep_lengths),
 			episode_cost=np.nanmean(ep_costs),
@@ -113,6 +115,7 @@ class OnlineTrainer(Trainer):
 						'Set `episodic=true` to enable support for terminations.')
 					train_metrics.update(
 						episode_reward=torch.tensor([td['reward'] for td in self._tds[1:]]).sum(),
+						episode_raw_reward=info.get('raw_reward_total', float('nan')),
 						episode_success=info.get('success', 0.0),
 						episode_length=len(self._tds),
 						episode_terminated=info['terminated'],

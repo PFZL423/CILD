@@ -54,6 +54,9 @@ class SafetyGymnasiumWrapper(gym.Wrapper):
 		self._in_hazard_steps = 0
 		# Updated each step; the trainer reads it at episode end.
 		self._last_dist_goal = float('nan')
+		# Sum of UNSHAPED rewards over the episode. Lets us compare runs with
+		# different cost_lambda on the same y-axis.
+		self._raw_reward_total = 0.0
 
 	def reset(self):
 		self._goal_reached_count = 0
@@ -63,6 +66,7 @@ class SafetyGymnasiumWrapper(gym.Wrapper):
 		self._cost_vases_velocity_total = 0.0
 		self._in_hazard_steps = 0
 		self._last_dist_goal = float('nan')
+		self._raw_reward_total = 0.0
 		obs, _info = self.env.reset()
 		# safety-gymnasium returns float64; let TensorWrapper handle the cast
 		return obs
@@ -80,9 +84,13 @@ class SafetyGymnasiumWrapper(gym.Wrapper):
 		# lambda=0 (default) recovers the vanilla baseline. Non-zero values
 		# are the control experiment for CILD's motivation -- showing that
 		# naive scalar shaping is not a structural fix for cost-aware planning.
+		raw_reward = float(reward)
+		self._raw_reward_total += raw_reward
 		cost_lambda = float(getattr(self.cfg, 'cost_lambda', 0.0))
 		if cost_lambda != 0.0:
-			reward = float(reward) - cost_lambda * float(cost)
+			reward = raw_reward - cost_lambda * float(cost)
+		else:
+			reward = raw_reward
 
 		task = self.env.unwrapped.task
 
@@ -130,6 +138,8 @@ class SafetyGymnasiumWrapper(gym.Wrapper):
 		info = dict(info) if info else {}
 		info['success'] = float(goal_reached)
 		info['terminated'] = bool(terminated)
+		info['raw_reward'] = raw_reward
+		info['raw_reward_total'] = float(self._raw_reward_total)
 		info['cost'] = float(cost)
 		info['cost_total'] = float(self._cost_total)
 		info['cost_hazards_total'] = float(self._cost_hazards_total)
