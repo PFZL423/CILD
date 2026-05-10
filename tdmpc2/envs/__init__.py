@@ -14,6 +14,11 @@ try:
 except:
 	make_safety_gym_env = missing_dependencies
 
+try:
+	from envs.isaaclab import make_env as make_isaaclab_env
+except:
+	make_isaaclab_env = missing_dependencies
+
 
 warnings.filterwarnings('ignore', category=DeprecationWarning)
 
@@ -43,11 +48,22 @@ def make_env(cfg):
 	"""
 	Make an environment for TD-MPC2 experiments.
 	"""
-	gym.logger.set_level(40)
+	try:
+		gym.logger.set_level(40)
+	except AttributeError:
+		pass  # newer gymnasium dropped this API; silencing its logger is cosmetic
 	if cfg.multitask:
 		env = make_multitask_env(cfg)
 
 	else:
+		if cfg.task.startswith('Isaac-'):
+			env = make_isaaclab_env(cfg)
+			cfg.obs_shape = {'state': env.observation_space.shape}
+			cfg.action_dim = env.action_space.shape[0]
+			cfg.episode_length = env.max_episode_steps
+			cfg.seed_steps = max(1000, 5 * cfg.episode_length)
+			cfg.num_envs = env.num_envs
+			return env
 		env = None
 		for fn in [make_safety_gym_env]:
 			try:
