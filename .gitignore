@@ -4,6 +4,19 @@ tdmpc2/outputs/
 tdmpc2/wandb/
 third_party/
 prototypes/**/outputs/
+MUJOCO_LOG.TXT
+
+# Accidental Hydra override files created when command args are split by shell.
+tdmpc2/compile=false
+tdmpc2/enable_wandb=false
+tdmpc2/eval_episodes=*
+tdmpc2/eval_freq=*
+tdmpc2/exp_name=*
+tdmpc2/model_size=*
+tdmpc2/save_video=false
+tdmpc2/seed=*
+tdmpc2/steps=*
+tdmpc2/task=*
 
 # HPC
 nautilus/*.yaml

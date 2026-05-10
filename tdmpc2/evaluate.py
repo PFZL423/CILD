@@ -35,9 +35,8 @@ def evaluate(cfg: dict):
 
 	Example usage:
 	````
-		$ python evaluate.py task=mt80 model_size=48 checkpoint=/path/to/mt80-48M.pt
-		$ python evaluate.py task=mt30 model_size=317 checkpoint=/path/to/mt30-317M.pt
-		$ python evaluate.py task=dog-run checkpoint=/path/to/dog-1.pt save_video=true
+		$ python evaluate.py task=SafetyPointGoal1-v0 checkpoint=/path/to/ckpt.pt
+		$ python evaluate.py task=SafetyPointGoal2-v0 checkpoint=/path/to/ckpt.pt save_video=true
 	```
 	"""
 	assert torch.cuda.is_available()

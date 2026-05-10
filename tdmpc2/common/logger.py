@@ -8,7 +8,6 @@ import numpy as np
 import pandas as pd
 from termcolor import colored
 
-from common import TASK_SET
 
 
 CONSOLE_FORMAT = [
@@ -16,7 +15,9 @@ CONSOLE_FORMAT = [
 	("episode", "E", "int"),
 	("step", "I", "int"),
 	("episode_reward", "R", "float"),
-	("episode_success", "S", "float"),
+	("episode_cost", "C", "float"),
+	("episode_goal_reached_count", "G", "float"),
+	("episode_final_goal_distance", "D", "float"),
 	("elapsed_time", "T", "time"),
 ]
 
@@ -194,34 +195,33 @@ class Logger:
 		print("   ".join(pieces))
 
 	def pprint_multitask(self, d, cfg):
-		"""Pretty-print evaluation metrics for multi-task training."""
+		"""Pretty-print evaluation metrics for multi-task training.
+
+		Generic per-task reward + global average. The original implementation
+		split benchmarks into dmcontrol / metaworld groups; that grouping was
+		removed when those benchmarks were dropped from the project.
+		"""
 		print(colored(f'Evaluated agent on {len(cfg.tasks)} tasks:', 'yellow', attrs=['bold']))
-		dmcontrol_reward = []
-		metaworld_reward = []
-		metaworld_success = []
+		rewards = []
+		successes = []
 		for k, v in d.items():
 			if '+' not in k:
 				continue
 			task = k.split('+')[1]
-			if task in TASK_SET['mt30'] and k.startswith('episode_reward'): # DMControl
-				dmcontrol_reward.append(v)
+			if k.startswith('episode_reward'):
+				rewards.append(v)
 				print(colored(f'  {task:<22}\tR: {v:.01f}', 'yellow'))
-			elif task in TASK_SET['mt80'] and task not in TASK_SET['mt30']: # Meta-World
-				if k.startswith('episode_reward'):
-					metaworld_reward.append(v)
-				elif k.startswith('episode_success'):
-					metaworld_success.append(v)
-					print(colored(f'  {task:<22}\tS: {v:.02f}', 'yellow'))
-		dmcontrol_reward = np.nanmean(dmcontrol_reward)
-		d['episode_reward+avg_dmcontrol'] = dmcontrol_reward
-		print(colored(f'  {"dmcontrol":<22}\tR: {dmcontrol_reward:.01f}', 'yellow', attrs=['bold']))
-		if cfg.task == 'mt80':
-			metaworld_reward = np.nanmean(metaworld_reward)
-			metaworld_success = np.nanmean(metaworld_success)
-			d['episode_reward+avg_metaworld'] = metaworld_reward
-			d['episode_success+avg_metaworld'] = metaworld_success
-			print(colored(f'  {"metaworld":<22}\tR: {metaworld_reward:.01f}', 'yellow', attrs=['bold']))
-			print(colored(f'  {"metaworld":<22}\tS: {metaworld_success:.02f}', 'yellow', attrs=['bold']))
+			elif k.startswith('episode_success'):
+				successes.append(v)
+				print(colored(f'  {task:<22}\tS: {v:.02f}', 'yellow'))
+		if rewards:
+			avg_reward = np.nanmean(rewards)
+			d['episode_reward+avg'] = avg_reward
+			print(colored(f'  {"avg":<22}\tR: {avg_reward:.01f}', 'yellow', attrs=['bold']))
+		if successes:
+			avg_success = np.nanmean(successes)
+			d['episode_success+avg'] = avg_success
+			print(colored(f'  {"avg":<22}\tS: {avg_success:.02f}', 'yellow', attrs=['bold']))
 
 	def log(self, d, category="train"):
 		assert category in CAT_TO_COLOR.keys(), f"invalid category: {category}"
@@ -235,13 +235,37 @@ class Logger:
 				_d[category + "/" + k] = v
 			self._wandb.log(_d, step=d[xkey])
 		if category == "eval" and self._save_csv:
-			keys = ["step", "episode_reward", "episode_success", "episode_collision"]
+			keys = [
+				"step",
+				"episode_reward",
+				"episode_success",
+				"episode_length",
+				"episode_cost",
+				"episode_cost_hazards",
+				"episode_cost_vases_contact",
+				"episode_cost_vases_velocity",
+				"episode_in_hazard_steps",
+				"episode_goal_reached_count",
+				"episode_final_goal_distance",
+			]
 			self._eval.append([d.get(k, float('nan')) for k in keys])
 			pd.DataFrame(self._eval).to_csv(
 				self._log_dir / "eval.csv", header=keys, index=None
 			)
 		if category == "train" and self._save_csv:
-			train_keys = ["step", "episode_reward", "episode_success", "episode_collision"]
+			train_keys = [
+				"step",
+				"episode_reward",
+				"episode_success",
+				"episode_length",
+				"episode_cost",
+				"episode_cost_hazards",
+				"episode_cost_vases_contact",
+				"episode_cost_vases_velocity",
+				"episode_in_hazard_steps",
+				"episode_goal_reached_count",
+				"episode_final_goal_distance",
+			]
 			row = [d.get(k, float('nan')) for k in train_keys]
 			if not hasattr(self, '_train'):
 				self._train = []
