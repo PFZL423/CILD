@@ -28,7 +28,16 @@ from envs.safety_gym import SAFETY_GYM_TASKS
 
 class _SafetyGymShim(gym.Env):
     """
-    Converts safety-gymnasium's 6-tuple step() to standard gymnasium 5-tuple.
+    Converts safety-gymnasium's 6-tuple step() to standard gymnasium 5-tuple,
+    and accumulates the per-episode metrics that SafetyGymnasiumWrapper
+    surfaces in single-env training. Keys emitted on EVERY step (so
+    AsyncVectorEnv's default info aggregation produces stable arrays):
+
+        cost, cost_total, cost_hazards_total,
+        cost_vases_contact_total, cost_vases_velocity_total,
+        in_hazard_steps, goal_reached_count, final_goal_distance,
+        success, terminated
+
     Must be at module level (not nested) to remain picklable for AsyncVectorEnv.
     """
 
@@ -48,8 +57,19 @@ class _SafetyGymShim(gym.Env):
             shape=env.action_space.shape,
             dtype=np.float32,
         )
+        self._reset_accumulators()
+
+    def _reset_accumulators(self):
+        self._goal_reached_count = 0
+        self._cost_total = 0.0
+        self._cost_hazards_total = 0.0
+        self._cost_vases_contact_total = 0.0
+        self._cost_vases_velocity_total = 0.0
+        self._in_hazard_steps = 0
+        self._last_dist_goal = float('nan')
 
     def reset(self, *, seed=None, options=None):
+        self._reset_accumulators()
         obs, info = self._env.reset()
         return obs.astype(np.float32), info
 
@@ -59,9 +79,36 @@ class _SafetyGymShim(gym.Env):
         )
         if self._cost_lambda != 0.0:
             reward = float(reward) - self._cost_lambda * float(cost)
+
+        goal_reached = bool(info.get('goal_met', False))
+        if goal_reached:
+            self._goal_reached_count += 1
+        c = float(cost)
+        self._cost_total += c
+        c_hazards = float(info.get('cost_hazards', 0.0))
+        c_vases_c = float(info.get('cost_vases_contact', 0.0))
+        c_vases_v = float(info.get('cost_vases_velocity', 0.0))
+        self._cost_hazards_total += c_hazards
+        self._cost_vases_contact_total += c_vases_c
+        self._cost_vases_velocity_total += c_vases_v
+        if c_hazards > 0.0:
+            self._in_hazard_steps += 1
+        try:
+            self._last_dist_goal = float(self._env.unwrapped.task.dist_goal())
+        except Exception:
+            self._last_dist_goal = float('nan')
+
         info = dict(info) if info else {}
-        info['cost'] = float(cost)
-        info['success'] = float(info.get('goal_met', False))
+        info['cost'] = c
+        info['cost_total'] = float(self._cost_total)
+        info['cost_hazards_total'] = float(self._cost_hazards_total)
+        info['cost_vases_contact_total'] = float(self._cost_vases_contact_total)
+        info['cost_vases_velocity_total'] = float(self._cost_vases_velocity_total)
+        info['in_hazard_steps'] = float(self._in_hazard_steps)
+        info['goal_reached_count'] = float(self._goal_reached_count)
+        info['final_goal_distance'] = float(self._last_dist_goal)
+        info['success'] = float(goal_reached)
+        info['terminated'] = bool(terminated)
         return obs.astype(np.float32), float(reward), bool(terminated), bool(truncated), info
 
     def close(self):
@@ -111,13 +158,24 @@ class SafetyGymVecEnv:
         obs, _ = self._vec.reset()
         return torch.from_numpy(obs.astype(np.float32)).to(self.device, non_blocking=True)
 
+    # Keys forwarded from the vectorized info dict. AsyncVectorEnv aggregates
+    # each scalar key from sub-env info into a length-num_envs np.array; we
+    # convert to GPU tensors so VecOnlineTrainer can index by `done` mask.
+    _METRIC_KEYS = (
+        'cost', 'cost_total',
+        'cost_hazards_total',
+        'cost_vases_contact_total', 'cost_vases_velocity_total',
+        'in_hazard_steps', 'goal_reached_count',
+        'final_goal_distance', 'success',
+    )
+
     def step(self, action: torch.Tensor):
         if isinstance(action, torch.Tensor):
             action_np = action.detach().cpu().numpy().astype(np.float32)
         else:
             action_np = np.asarray(action, dtype=np.float32)
 
-        obs, reward, terminated, truncated, _ = self._vec.step(action_np)
+        obs, reward, terminated, truncated, vec_info = self._vec.step(action_np)
 
         obs_t = torch.from_numpy(obs.astype(np.float32)).to(self.device, non_blocking=True)
         reward_t = torch.from_numpy(reward.astype(np.float32)).to(self.device, non_blocking=True)
@@ -128,9 +186,15 @@ class SafetyGymVecEnv:
         info = {
             'terminated': terminated_t,
             'truncated': truncated_t,
-            # success/cost tracking omitted for initial impl; trainer falls back to zeros
-            'success': torch.zeros(self.num_envs, device=self.device, dtype=torch.float32),
         }
+        for key in self._METRIC_KEYS:
+            arr = vec_info.get(key)
+            if arr is None:
+                info[key] = torch.zeros(self.num_envs, device=self.device, dtype=torch.float32)
+            else:
+                info[key] = torch.from_numpy(np.asarray(arr, dtype=np.float32)).to(
+                    self.device, non_blocking=True
+                )
         return obs_t, reward_t, done_t, info
 
     def rand_act(self) -> torch.Tensor:

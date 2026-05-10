@@ -231,7 +231,9 @@ class TDMPC2(torch.nn.Module):
 		a = elite_actions[0, rand_idx]  # [action_dim]
 		if not eval_mode:
 			a = a + std[0] * torch.randn(self.cfg.action_dim, device=self.device)
-		self._prev_mean[0].copy_(mean)
+		# Full-tensor copy_ (rather than slice copy_) keeps the buffer's
+		# storage stable for cudagraph capture under reduce-overhead compile.
+		self._prev_mean.copy_(mean.unsqueeze(0))
 		return a.unsqueeze(0).clamp(-1, 1)  # [1, action_dim]
 
 	@torch.no_grad()
