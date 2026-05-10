@@ -11,8 +11,10 @@ def missing_dependencies(task):
 
 try:
 	from envs.safety_gym import make_env as make_safety_gym_env
+	from envs.safety_gym_vec import SafetyGymVecEnv
 except:
 	make_safety_gym_env = missing_dependencies
+	SafetyGymVecEnv = None
 
 try:
 	from envs.isaaclab import make_env as make_isaaclab_env
@@ -59,6 +61,17 @@ def make_env(cfg):
 		if cfg.task.startswith('Isaac-'):
 			env = make_isaaclab_env(cfg)
 			cfg.obs_shape = {'state': env.observation_space.shape}
+			cfg.action_dim = env.action_space.shape[0]
+			cfg.episode_length = env.max_episode_steps
+			cfg.seed_steps = max(1000, 5 * cfg.episode_length)
+			cfg.num_envs = env.num_envs
+			return env
+		num_envs = int(getattr(cfg, 'num_envs', 1))
+		if num_envs > 1:
+			if SafetyGymVecEnv is None:
+				raise RuntimeError('SafetyGymVecEnv could not be imported; check safety-gymnasium installation.')
+			env = SafetyGymVecEnv(cfg, device='cuda:0')
+			cfg.obs_shape = {cfg.get('obs', 'state'): env.observation_space.shape}
 			cfg.action_dim = env.action_space.shape[0]
 			cfg.episode_length = env.max_episode_steps
 			cfg.seed_steps = max(1000, 5 * cfg.episode_length)

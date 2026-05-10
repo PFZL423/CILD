@@ -13,10 +13,12 @@ from termcolor import colored
 from common.parser import parse_cfg
 from common.seed import set_seed
 from common.buffer import Buffer
+from common.buffer_vec import VecBuffer
 from envs import make_env
 from tdmpc2 import TDMPC2
 from trainer.offline_trainer import OfflineTrainer
 from trainer.online_trainer import OnlineTrainer
+from trainer.vec_online_trainer import VecOnlineTrainer
 from common.logger import Logger
 
 torch.backends.cudnn.benchmark = True
@@ -49,12 +51,22 @@ def train(cfg: dict):
 	set_seed(cfg.seed)
 	print(colored('Work dir:', 'yellow', attrs=['bold']), cfg.work_dir)
 
-	trainer_cls = OfflineTrainer if cfg.multitask else OnlineTrainer
+	env = make_env(cfg)
+	num_envs = int(getattr(cfg, 'num_envs', 1))
+	if num_envs > 1:
+		trainer_cls = VecOnlineTrainer
+		buffer = VecBuffer(cfg)
+	elif cfg.multitask:
+		trainer_cls = OfflineTrainer
+		buffer = Buffer(cfg)
+	else:
+		trainer_cls = OnlineTrainer
+		buffer = Buffer(cfg)
 	trainer = trainer_cls(
 		cfg=cfg,
-		env=make_env(cfg),
+		env=env,
 		agent=TDMPC2(cfg),
-		buffer=Buffer(cfg),
+		buffer=buffer,
 		logger=Logger(cfg),
 	)
 	trainer.train()

@@ -50,6 +50,7 @@ class TDMPC2(torch.nn.Module):
 		num_envs = max(self.cfg.num_envs, 1)
 		self.register_buffer('_prev_mean', torch.zeros(num_envs, self.cfg.horizon, self.cfg.action_dim, device=self.device))
 		self.register_buffer('_plan_step_counter', torch.zeros(num_envs, dtype=torch.long, device=self.device))
+		self._plan_fn = self._plan_single if self.cfg.num_envs == 1 else self._plan
 		if cfg.compile:
 			print('Compiling update function with torch.compile...')
 			self._update = torch.compile(self._update, mode="reduce-overhead")
@@ -60,9 +61,9 @@ class TDMPC2(torch.nn.Module):
 		if _plan_val is not None:
 			return _plan_val
 		if self.cfg.compile:
-			plan = torch.compile(self._plan, mode="reduce-overhead")
+			plan = torch.compile(self._plan_fn, mode="reduce-overhead")
 		else:
-			plan = self._plan
+			plan = self._plan_fn
 		self._plan_val = plan
 		return self._plan_val
 
@@ -155,6 +156,83 @@ class TDMPC2(torch.nn.Module):
 		if eval_mode:
 			action = info["mean"]
 		return action[0].cpu() if B == 1 else action
+
+	@torch.no_grad()
+	def _plan_single(self, obs, t0=False, eval_mode=False, task=None):
+		"""
+		B=1 static planning path. All tensor shapes are compile-time constants,
+		avoiding the SymInt bug triggered when B is treated as a dynamic dimension.
+
+		Args:
+			obs (torch.Tensor): [1, obs_dim] or [obs_dim] observation.
+			t0 (torch.Tensor or bool): Episode-start flag, shape [1] or scalar.
+			eval_mode (bool): Use deterministic actions.
+			task: Task index (multi-task only).
+
+		Returns:
+			torch.Tensor: Action with shape [1, action_dim].
+		"""
+		if obs.ndim == 1:
+			obs = obs.unsqueeze(0)
+		if not isinstance(t0, torch.Tensor):
+			t0 = torch.tensor([bool(t0)], dtype=torch.bool, device=self.device)
+		else:
+			t0 = t0.to(self.device, non_blocking=True).bool().flatten()[:1]
+
+		z = self.model.encode(obs, task)  # [1, latent_dim]
+
+		# Policy trajectories
+		if self.cfg.num_pi_trajs > 0:
+			pi_actions = torch.empty(self.cfg.horizon, self.cfg.num_pi_trajs, self.cfg.action_dim, device=self.device)
+			_z = z.expand(self.cfg.num_pi_trajs, -1)  # [num_pi_trajs, latent_dim]
+			for t in range(self.cfg.horizon - 1):
+				_pi_action, _ = self.model.pi(_z, task)
+				pi_actions[t] = _pi_action
+				_z = self.model.next(_z, _pi_action, task)
+			_pi_action, _ = self.model.pi(_z, task)
+			pi_actions[-1] = _pi_action
+
+		# Warm-start mean: shift prev plan by 1 step (torch.where avoids graph break)
+		shifted = torch.cat([
+			self._prev_mean[0, 1:],
+			torch.zeros(1, self.cfg.action_dim, device=self.device),
+		], dim=0)  # [horizon, action_dim]
+		mean = torch.where(t0.view(1, 1), torch.zeros_like(shifted), shifted)
+		std = torch.full((self.cfg.horizon, self.cfg.action_dim), self.cfg.max_std, dtype=torch.float, device=self.device)
+
+		z = z.expand(self.cfg.num_samples, -1)  # [num_samples, latent_dim]
+		actions = torch.empty(self.cfg.horizon, self.cfg.num_samples, self.cfg.action_dim, device=self.device)
+		if self.cfg.num_pi_trajs > 0:
+			actions[:, :self.cfg.num_pi_trajs] = pi_actions
+
+		# CEM iterations
+		for _ in range(self.cfg.iterations):
+			r = torch.randn(self.cfg.horizon, self.cfg.num_samples - self.cfg.num_pi_trajs, self.cfg.action_dim, device=self.device)
+			actions[:, self.cfg.num_pi_trajs:] = (mean.unsqueeze(1) + std.unsqueeze(1) * r).clamp(-1, 1)
+
+			value = self._estimate_value(z, actions, task).reshape(self.cfg.num_samples).nan_to_num(0)
+			elite_idxs = torch.topk(value, self.cfg.num_elites, dim=0).indices  # [num_elites]
+			elite_value = value[elite_idxs].unsqueeze(-1)  # [num_elites, 1]
+			elite_idxs_exp = elite_idxs.view(1, self.cfg.num_elites, 1).expand(
+				self.cfg.horizon, self.cfg.num_elites, self.cfg.action_dim)
+			elite_actions = torch.gather(actions, 1, elite_idxs_exp)  # [horizon, num_elites, action_dim]
+
+			max_value = elite_value.max(0, keepdim=True).values
+			score = torch.exp(self.cfg.temperature * (elite_value - max_value))
+			score = score / score.sum(0, keepdim=True)  # [num_elites, 1]
+			mean = (score.view(1, self.cfg.num_elites, 1) * elite_actions).sum(1) / (score.sum() + 1e-9)
+			std = ((score.view(1, self.cfg.num_elites, 1) * (elite_actions - mean.unsqueeze(1)) ** 2).sum(1) / (score.sum() + 1e-9)).sqrt()
+			std = std.clamp(self.cfg.min_std, self.cfg.max_std)
+
+		# Gumbel top-1 selection
+		probs = score.squeeze(-1).clamp_min(1e-9)  # [num_elites]
+		gumbel = -torch.log(-torch.log(torch.rand_like(probs).clamp_min(1e-9)).clamp_min(1e-9))
+		rand_idx = torch.argmax(probs.log() + gumbel)
+		a = elite_actions[0, rand_idx]  # [action_dim]
+		if not eval_mode:
+			a = a + std[0] * torch.randn(self.cfg.action_dim, device=self.device)
+		self._prev_mean[0].copy_(mean)
+		return a.unsqueeze(0).clamp(-1, 1)  # [1, action_dim]
 
 	@torch.no_grad()
 	def _estimate_value(self, z, actions, task):
