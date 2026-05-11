@@ -69,9 +69,30 @@ class _SafetyGymShim(gym.Env):
         self._last_dist_goal = float('nan')
         self._raw_reward_total = 0.0
 
+    def _final_snapshot(self):
+        # Per-episode totals captured BEFORE accumulators are cleared. Returned
+        # in the info dict from reset() so that AsyncVectorEnv's autoreset
+        # (which routes the post-reset info — not the pre-reset step info — to
+        # the main process) cannot silently drop episode-end metrics.
+        return {
+            'raw_reward_total': float(self._raw_reward_total),
+            'cost': 0.0,
+            'cost_total': float(self._cost_total),
+            'cost_hazards_total': float(self._cost_hazards_total),
+            'cost_vases_contact_total': float(self._cost_vases_contact_total),
+            'cost_vases_velocity_total': float(self._cost_vases_velocity_total),
+            'in_hazard_steps': float(self._in_hazard_steps),
+            'goal_reached_count': float(self._goal_reached_count),
+            'final_goal_distance': float(self._last_dist_goal),
+            'success': float(self._goal_reached_count > 0),
+        }
+
     def reset(self, *, seed=None, options=None):
+        snapshot = self._final_snapshot()
         self._reset_accumulators()
-        obs, info = self._env.reset()
+        obs, info = self._env.reset(seed=seed, options=options)
+        info = dict(info) if info else {}
+        info.update(snapshot)
         return obs.astype(np.float32), info
 
     def step(self, action):
