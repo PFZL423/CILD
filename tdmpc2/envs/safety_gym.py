@@ -31,6 +31,21 @@ SAFETY_GYM_TASKS = {
 }
 
 
+def _min_lidar_from_obs(obs):
+	"""Best-effort extraction of the latest 32 lidar rays from state obs."""
+	obs = np.asarray(obs, dtype=np.float32).reshape(-1)
+	if obs.size < 40:
+		return float('nan')
+	if obs.size % 40 == 0:
+		frame_start = obs.size - 40
+	else:
+		frame_start = 0
+	lidar = obs[frame_start + 8:frame_start + 40]
+	if lidar.size == 0:
+		return float('nan')
+	return float(np.min(lidar))
+
+
 class SafetyGymnasiumWrapper(gym.Wrapper):
 	"""Bridge between safety-gymnasium 1.0 and TD-MPC2's TensorWrapper.
 
@@ -148,6 +163,9 @@ class SafetyGymnasiumWrapper(gym.Wrapper):
 		info['in_hazard_steps'] = float(self._in_hazard_steps)
 		info['goal_reached_count'] = float(self._goal_reached_count)
 		info['final_goal_distance'] = float(self._last_dist_goal)
+		info['collision_flag'] = float(c_hazards > 0.0)
+		info['min_lidar_dist'] = _min_lidar_from_obs(obs)
+		info['goal_dist'] = float(self._last_dist_goal)
 
 		return obs, reward, done, info
 

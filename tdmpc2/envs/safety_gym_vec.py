@@ -26,6 +26,21 @@ import safety_gymnasium
 from envs.safety_gym import SAFETY_GYM_TASKS
 
 
+def _min_lidar_from_obs(obs):
+    """Best-effort extraction of the latest 32 lidar rays from state obs."""
+    obs = np.asarray(obs, dtype=np.float32).reshape(-1)
+    if obs.size < 40:
+        return float('nan')
+    if obs.size % 40 == 0:
+        frame_start = obs.size - 40
+    else:
+        frame_start = 0
+    lidar = obs[frame_start + 8:frame_start + 40]
+    if lidar.size == 0:
+        return float('nan')
+    return float(np.min(lidar))
+
+
 class _SafetyGymShim(gym.Env):
     """
     Converts safety-gymnasium's 6-tuple step() to standard gymnasium 5-tuple,
@@ -67,6 +82,8 @@ class _SafetyGymShim(gym.Env):
         self._cost_vases_velocity_total = 0.0
         self._in_hazard_steps = 0
         self._last_dist_goal = float('nan')
+        self._last_min_lidar_dist = float('nan')
+        self._last_collision_flag = 0.0
         self._raw_reward_total = 0.0
 
     def _final_snapshot(self):
@@ -85,6 +102,9 @@ class _SafetyGymShim(gym.Env):
             'goal_reached_count': float(self._goal_reached_count),
             'final_goal_distance': float(self._last_dist_goal),
             'success': float(self._goal_reached_count > 0),
+            'collision_flag': float(self._last_collision_flag),
+            'min_lidar_dist': float(self._last_min_lidar_dist),
+            'goal_dist': float(self._last_dist_goal),
         }
 
     def reset(self, *, seed=None, options=None):
@@ -118,6 +138,8 @@ class _SafetyGymShim(gym.Env):
         self._cost_vases_velocity_total += c_vases_v
         if c_hazards > 0.0:
             self._in_hazard_steps += 1
+        self._last_collision_flag = float(c_hazards > 0.0)
+        self._last_min_lidar_dist = _min_lidar_from_obs(obs)
         try:
             self._last_dist_goal = float(self._env.unwrapped.task.dist_goal())
         except Exception:
@@ -137,6 +159,9 @@ class _SafetyGymShim(gym.Env):
         info['final_goal_distance'] = float(self._last_dist_goal)
         info['success'] = float(goal_reached)
         info['terminated'] = bool(terminated)
+        info['collision_flag'] = float(self._last_collision_flag)
+        info['min_lidar_dist'] = float(self._last_min_lidar_dist)
+        info['goal_dist'] = float(self._last_dist_goal)
         return obs.astype(np.float32), float(reward), bool(terminated), bool(truncated), info
 
     def close(self):
@@ -196,6 +221,7 @@ class SafetyGymVecEnv:
         'cost_vases_contact_total', 'cost_vases_velocity_total',
         'in_hazard_steps', 'goal_reached_count',
         'final_goal_distance', 'success',
+        'collision_flag', 'min_lidar_dist', 'goal_dist',
     )
 
     def step(self, action: torch.Tensor):

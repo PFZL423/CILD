@@ -1,10 +1,16 @@
 import torch
 import torch.nn.functional as F
 
-from common import math
-from common.scale import RunningScale
-from common.world_model import WorldModel
-from common.layers import api_model_conversion
+try:
+	from common import math
+	from common.scale import RunningScale
+	from common.world_model import WorldModel
+	from common.layers import api_model_conversion
+except ModuleNotFoundError:
+	from tdmpc2.common import math
+	from tdmpc2.common.scale import RunningScale
+	from tdmpc2.common.world_model import WorldModel
+	from tdmpc2.common.layers import api_model_conversion
 from tensordict import TensorDict
 
 
@@ -27,7 +33,7 @@ class TDMPC2(torch.nn.Module):
 		self.cfg = cfg
 		self.device = torch.device('cuda:0')
 		self.model = WorldModel(cfg).to(self.device)
-		self.optim = torch.optim.Adam([
+		_optim_groups = [
 			{'params': self.model._encoder.parameters(), 'lr': self.cfg.lr*self.cfg.enc_lr_scale},
 			{'params': self.model._dynamics.parameters()},
 			{'params': self.model._reward.parameters()},
@@ -35,7 +41,12 @@ class TDMPC2(torch.nn.Module):
 			{'params': self.model._Qs.parameters()},
 			{'params': self.model._task_emb.parameters() if self.cfg.multitask else []
 			 }
-		], lr=self.cfg.lr, capturable=True)
+		]
+		if getattr(self.cfg, 'use_cild_heads', False):
+			_optim_groups.append({'params': self.model._risk_head.parameters()})
+			_optim_groups.append({'params': self.model._progress_head.parameters()})
+			_optim_groups.append({'params': self.model._occupancy_head.parameters()})
+		self.optim = torch.optim.Adam(_optim_groups, lr=self.cfg.lr, capturable=True)
 		self.pi_optim = torch.optim.Adam(self.model._pi.parameters(), lr=self.cfg.lr, eps=1e-5, capturable=True)
 		self.model.eval()
 		self.scale = RunningScale(cfg)
@@ -412,7 +423,7 @@ class TDMPC2(torch.nn.Module):
 		discount = self.discount[task].unsqueeze(-1) if self.cfg.multitask else self.discount
 		return reward + discount * (1-terminated) * self.model.Q(next_z, action, task, return_type='min', target=True)
 
-	def _update(self, obs, action, reward, terminated, task=None):
+	def _update(self, obs, action, reward, terminated, task=None, cild_labels=None):
 		# Compute targets
 		with torch.no_grad():
 			next_z = self.model.encode(obs[1:], task)
@@ -458,6 +469,9 @@ class TDMPC2(torch.nn.Module):
 			self.cfg.termination_coef * termination_loss +
 			self.cfg.value_coef * value_loss
 		)
+		if getattr(self.cfg, 'use_cild_heads', False):
+			cild_loss_value = self.model.cild_loss(zs, action, cild_labels)
+			total_loss = total_loss + cild_loss_value
 
 		# Update model
 		total_loss.backward()
@@ -481,6 +495,8 @@ class TDMPC2(torch.nn.Module):
 			"total_loss": total_loss,
 			"grad_norm": grad_norm,
 		})
+		if getattr(self.cfg, 'use_cild_heads', False):
+			info["cild_loss"] = cild_loss_value.detach()
 		if self.cfg.episodic:
 			info.update(math.termination_statistics(torch.sigmoid(termination_pred[-1]), terminated[-1]))
 		info.update(pi_info)
@@ -496,9 +512,20 @@ class TDMPC2(torch.nn.Module):
 		Returns:
 			dict: Dictionary of training statistics.
 		"""
-		obs, action, reward, terminated, task = buffer.sample()
+		if getattr(self.cfg, 'use_cild_heads', False):
+			obs, action, reward, terminated, task, collision_flag, min_lidar_dist, goal_dist = buffer.sample_with_labels()
+			labels = {
+				'collision_flag': collision_flag,
+				'min_lidar_dist': min_lidar_dist,
+				'goal_dist': goal_dist,
+			}
+		else:
+			obs, action, reward, terminated, task = buffer.sample()
+			labels = None
 		kwargs = {}
 		if task is not None:
 			kwargs["task"] = task
+		if getattr(self.cfg, 'use_cild_heads', False):
+			kwargs["cild_labels"] = labels
 		torch.compiler.cudagraph_mark_step_begin()
 		return self._update(obs, action, reward, terminated, **kwargs)

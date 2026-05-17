@@ -332,12 +332,19 @@ class CILDNavEnv(DirectRLEnv):
             self._respawn_goal(goal_reached.nonzero(as_tuple=False).squeeze(-1))
 
         # Privileged info for CILD cost head labels
+        label_goal_dist = torch.norm(robot_xy - self._goal_pos, dim=-1)
+        lidar_ranges_m = self._compute_lidar() * self.cfg.lidar_max_dist
+        min_lidar_dist = lidar_ranges_m.min(dim=-1).values
+        collision_threshold = float(getattr(self.cfg, "collision_lidar_threshold", 0.3))
         self.extras["cost"] = in_collision.float()
         self.extras["obstacle_positions"] = torch.cat([self._hazard_pos, self._vase_pos], dim=1)
         self.extras["obstacle_velocities"] = torch.cat([
             torch.zeros_like(self._hazard_pos), self._vase_vel,
         ], dim=1)
         self.extras["goal_reached"] = goal_reached.float()
+        self.extras["collision_flag"] = (min_lidar_dist < collision_threshold).float()
+        self.extras["min_lidar_dist"] = min_lidar_dist.float()
+        self.extras["goal_dist"] = label_goal_dist.float()
 
         return total_reward
 

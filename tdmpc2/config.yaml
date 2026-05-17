@@ -66,6 +66,11 @@ task_dim: 96
 num_q: 5
 dropout: 0.01
 simnorm_dim: 8
+use_cild_heads: false
+use_cild_mppi: false
+risk_horizon_k: 5
+occupancy_dim: 16
+cild_head_hidden: 256
 
 # logging
 wandb_project: ???

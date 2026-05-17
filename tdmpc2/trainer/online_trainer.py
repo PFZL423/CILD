@@ -3,7 +3,10 @@ from time import time
 import numpy as np
 import torch
 from tensordict.tensordict import TensorDict
-from trainer.base import Trainer
+try:
+	from trainer.base import Trainer
+except ModuleNotFoundError:
+	from .base import Trainer
 
 
 class OnlineTrainer(Trainer):
@@ -31,8 +34,10 @@ class OnlineTrainer(Trainer):
 		ep_costs, ep_goal_reached_counts = [], []
 		ep_cost_hazards, ep_cost_vases_c, ep_cost_vases_v = [], [], []
 		ep_in_hazard_steps, ep_final_goal_dist = [], []
+		total_goals_reached, total_env_steps = 0.0, 0
 		for i in range(self.cfg.eval_episodes):
 			obs, done, ep_reward, t = self.env.reset(), False, 0, 0
+			ep_goal_reached_count = 0.0
 			if self.cfg.save_video:
 				self.logger.video.init(self.env, enabled=(i==0))
 			while not done:
@@ -41,17 +46,20 @@ class OnlineTrainer(Trainer):
 				obs, reward, done, info = self.env.step(action)
 				ep_reward += reward
 				t += 1
+				ep_goal_reached_count = info.get('goal_reached_count', ep_goal_reached_count)
 				if self.cfg.save_video:
 					self.logger.video.record(self.env)
 			ep_rewards.append(ep_reward)
 			ep_raw_rewards.append(info.get('raw_reward_total', float('nan')))
-			# `success` here is a per-step flag from the wrapper; on Safety
-			# Gymnasium goal tasks the goal respawns, so the per-episode
-			# meaningful summary is goal_reached_count, not success.
+			# Legacy metric: `success` is only the final step's flag. For
+			# respawning-goal tasks, use throughput metrics below instead.
 			ep_successes.append(info.get('success', 0.0))
 			ep_lengths.append(t)
 			ep_costs.append(info.get('cost_total', 0.0))
-			ep_goal_reached_counts.append(info.get('goal_reached_count', 0.0))
+			ep_goal_reached_count = info.get('goal_reached_count', ep_goal_reached_count)
+			ep_goal_reached_counts.append(ep_goal_reached_count)
+			total_goals_reached += ep_goal_reached_count
+			total_env_steps += t
 			ep_cost_hazards.append(info.get('cost_hazards_total', 0.0))
 			ep_cost_vases_c.append(info.get('cost_vases_contact_total', 0.0))
 			ep_cost_vases_v.append(info.get('cost_vases_velocity_total', 0.0))
@@ -71,9 +79,14 @@ class OnlineTrainer(Trainer):
 			episode_in_hazard_steps=np.nanmean(ep_in_hazard_steps),
 			episode_goal_reached_count=np.nanmean(ep_goal_reached_counts),
 			episode_final_goal_distance=np.nanmean(ep_final_goal_dist),
+			goal_throughput_per_step=total_goals_reached / max(total_env_steps, 1),
+			mean_steps_per_goal=total_env_steps / max(total_goals_reached, 1),
+			total_goals_reached=total_goals_reached,
+			total_env_steps=total_env_steps,
 		)
 
-	def to_td(self, obs, action=None, reward=None, terminated=None):
+	def to_td(self, obs, action=None, reward=None, terminated=None,
+		  collision_flag=None, min_lidar_dist=None, goal_dist=None):
 		"""Creates a TensorDict for a new episode."""
 		if isinstance(obs, dict):
 			obs = TensorDict(obs, batch_size=(), device='cpu')
@@ -85,12 +98,31 @@ class OnlineTrainer(Trainer):
 			reward = torch.tensor(float('nan'))
 		if terminated is None:
 			terminated = torch.tensor(float('nan'))
-		td = TensorDict(
+		if collision_flag is None:
+			collision_flag = torch.tensor(float('nan'))
+		elif not isinstance(collision_flag, torch.Tensor):
+			collision_flag = torch.tensor(collision_flag)
+		if min_lidar_dist is None:
+			min_lidar_dist = torch.tensor(float('nan'))
+		elif not isinstance(min_lidar_dist, torch.Tensor):
+			min_lidar_dist = torch.tensor(min_lidar_dist)
+		if goal_dist is None:
+			goal_dist = torch.tensor(float('nan'))
+		elif not isinstance(goal_dist, torch.Tensor):
+			goal_dist = torch.tensor(goal_dist)
+		data = dict(
 			obs=obs,
 			action=action.unsqueeze(0),
 			reward=reward.unsqueeze(0),
 			terminated=terminated.unsqueeze(0),
-		batch_size=(1,))
+		)
+		if getattr(getattr(self, 'cfg', None), 'use_cild_heads', False):
+			data.update(
+				collision_flag=collision_flag.unsqueeze(0),
+				min_lidar_dist=min_lidar_dist.unsqueeze(0),
+				goal_dist=goal_dist.unsqueeze(0),
+			)
+		td = TensorDict(data, batch_size=(1,))
 		return td
 
 	def train(self):
@@ -140,7 +172,12 @@ class OnlineTrainer(Trainer):
 			else:
 				action = self.env.rand_act()
 			obs, reward, done, info = self.env.step(action)
-			self._tds.append(self.to_td(obs, action, reward, info['terminated']))
+			self._tds.append(self.to_td(
+				obs, action, reward, info['terminated'],
+				collision_flag=info.get('collision_flag', float('nan')),
+				min_lidar_dist=info.get('min_lidar_dist', float('nan')),
+				goal_dist=info.get('goal_dist', float('nan')),
+			))
 
 			# Update agent
 			if self._step >= self.cfg.seed_steps:

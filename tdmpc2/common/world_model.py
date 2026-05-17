@@ -3,7 +3,10 @@ from copy import deepcopy
 import torch
 import torch.nn as nn
 
-from common import layers, math, init
+try:
+	from common import layers, math, init
+except ModuleNotFoundError:
+	from tdmpc2.common import layers, math, init
 from tensordict import TensorDict
 from tensordict.nn import TensorDictParams
 
@@ -34,6 +37,15 @@ class WorldModel(nn.Module):
 		self.register_buffer("log_std_min", torch.tensor(cfg.log_std_min))
 		self.register_buffer("log_std_dif", torch.tensor(cfg.log_std_max) - self.log_std_min)
 		self.init()
+		if getattr(cfg, 'use_cild_heads', False):
+			try:
+				from common.cild_heads import RiskHead, ProgressHead, OccupancyHead
+			except ModuleNotFoundError:
+				from tdmpc2.common.cild_heads import RiskHead, ProgressHead, OccupancyHead
+			hidden = getattr(cfg, 'cild_head_hidden', 256)
+			self._risk_head = RiskHead(cfg.latent_dim, cfg.action_dim, hidden)
+			self._progress_head = ProgressHead(cfg.latent_dim, cfg.action_dim, hidden)
+			self._occupancy_head = OccupancyHead(cfg.latent_dim, getattr(cfg, 'occupancy_dim', 16), hidden)
 
 	def init(self):
 		# Create params
@@ -214,3 +226,17 @@ class WorldModel(nn.Module):
 		if return_type == "min":
 			return Q.min(0).values
 		return Q.sum(0) / 2
+
+	def cild_loss(self, zs, actions, labels):
+		"""CILD auxiliary head loss. Phase 1 will fill in the real implementation.
+
+		Args:
+			zs: latent rollout, shape (H+1, B, latent_dim)
+			actions: action sequence, shape (H, B, action_dim)
+			labels: dict with keys 'collision_flag', 'min_lidar_dist', 'goal_dist',
+				each tensor shape (H+1, B, 1), or None values if not yet wired.
+
+		Returns:
+			Scalar tensor (currently 0.0, to be implemented in Phase 1).
+		"""
+		return torch.zeros((), device=zs.device, dtype=zs.dtype)

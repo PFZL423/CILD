@@ -95,7 +95,10 @@ class Buffer():
 		Prepare a sampled batch for training (post-processing).
 		Expects `td` to be a TensorDict with batch size TxB.
 		"""
-		td = td.select("obs", "action", "reward", "terminated", "task", strict=False).to(self._device, non_blocking=True)
+		keys = ["obs", "action", "reward", "terminated", "task"]
+		if getattr(self.cfg, 'use_cild_heads', False):
+			keys += ["collision_flag", "min_lidar_dist", "goal_dist"]
+		td = td.select(*keys, strict=False).to(self._device, non_blocking=True)
 		obs = td.get('obs').contiguous()
 		action = td.get('action')[1:].contiguous()
 		reward = td.get('reward')[1:].unsqueeze(-1).contiguous()
@@ -113,3 +116,25 @@ class Buffer():
 		"""Sample a batch of subsequences from the buffer."""
 		td = self._buffer.sample().view(-1, self.cfg.horizon+1).permute(1, 0)
 		return self._prepare_batch(td)
+
+	def sample_with_labels(self):
+		"""Sample a batch and return CILD auxiliary labels.
+
+		Returns 8-tuple: (obs, action, reward, terminated, task, collision_flag,
+		min_lidar_dist, goal_dist). Label tensors will be None if the trainer
+		has not yet been wired to write them into the buffer (Phase 1 task).
+		"""
+		td = self._buffer.sample().view(-1, self.cfg.horizon+1).permute(1, 0)
+		obs, action, reward, terminated, task = self._prepare_batch(td)
+		td = td.select("collision_flag", "min_lidar_dist", "goal_dist", strict=False).to(self._device, non_blocking=True)
+
+		def _maybe(name):
+			t = td.get(name, None)
+			if t is None:
+				return None
+			return t.unsqueeze(-1).contiguous()
+
+		collision_flag = _maybe('collision_flag')
+		min_lidar_dist = _maybe('min_lidar_dist')
+		goal_dist = _maybe('goal_dist')
+		return obs, action, reward, terminated, task, collision_flag, min_lidar_dist, goal_dist
