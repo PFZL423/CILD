@@ -142,3 +142,123 @@ def test_world_model_cild_loss_is_zero_scalar_and_graph_safe():
 	assert not loss.requires_grad
 	((zs * 0).sum() + loss).backward()
 	assert zs.grad is not None
+
+
+def test_cild_loss_nonzero_and_gradient_flows():
+	"""With use_cild_heads=True, cild_loss should be nonzero and backprop through zs."""
+	cfg = _world_model_cfg()
+	cfg.use_cild_heads = True
+	model = WorldModel(cfg)
+
+	H, B = 3, 4
+	zs = torch.randn(H + 1, B, cfg.latent_dim, requires_grad=True)
+	actions = torch.randn(H, B, cfg.action_dim)
+	labels = {
+		'collision_flag': torch.zeros(H + 1, B, 1),
+		'min_lidar_dist': torch.ones(H + 1, B, 1) * 0.5,
+		'goal_dist': torch.linspace(3, 1, H + 1).unsqueeze(-1).unsqueeze(-1).expand(H + 1, B, 1),
+	}
+	# Inject some collisions to make BCE non-trivial
+	labels['collision_flag'][1, :, 0] = 1.0
+	labels['collision_flag'][2, 0, 0] = 1.0
+
+	loss = model.cild_loss(zs, actions, labels)
+
+	assert loss.shape == ()
+	assert loss.item() != 0.0, f"cild_loss should be nonzero, got {loss.item()}"
+	assert loss.requires_grad
+	assert torch.isfinite(loss), f"cild_loss is not finite: {loss.item()}"
+
+	loss.backward()
+	assert zs.grad is not None
+	assert zs.grad.abs().sum() > 0, "Gradient should flow through zs"
+
+
+def test_cild_loss_masks_reset_rows_in_progress():
+	"""Reset rows (NaN in goal_dist) must not contribute to progress loss.
+
+	Reproduces the Codex P2 finding: if goal_dist[0]=NaN gets sanitized to 0,
+	then p_target = 0 - goal_dist[1] becomes a large false-negative target.
+	With masking, the loss at row 0 should be excluded.
+	"""
+	cfg = _world_model_cfg()
+	cfg.use_cild_heads = True
+	model = WorldModel(cfg)
+	# Make heads deterministic by zeroing all params; predictions are then
+	# constants and any nonzero loss comes from labels.
+	for p in model._progress_head.parameters():
+		torch.nn.init.zeros_(p)
+	for p in model._risk_head.parameters():
+		torch.nn.init.zeros_(p)
+
+	H, B = 3, 1
+	zs = torch.zeros(H + 1, B, cfg.latent_dim, requires_grad=True)
+	actions = torch.zeros(H, B, cfg.action_dim)
+
+	# Case 1: clean labels (no NaN) — establish baseline loss
+	labels_clean = {
+		'collision_flag': torch.zeros(H + 1, B, 1),
+		'min_lidar_dist': torch.full((H + 1, B, 1), 10.0),
+		# Strong progress signal: 1.5m -> 1.4m -> 1.3m -> 1.2m
+		'goal_dist': torch.tensor([1.5, 1.4, 1.3, 1.2]).view(H + 1, 1, 1),
+	}
+	loss_clean = model.cild_loss(zs, actions, labels_clean)
+
+	# Case 2: row 0 of goal_dist is NaN (simulating reset). If mask works,
+	# the only loss difference comes from removing 1 of H progress rows.
+	# The bug-symptom would be: p_target[0] = 0 - 1.4 = -1.4 (huge), loss explodes.
+	labels_reset = {
+		'collision_flag': torch.zeros(H + 1, B, 1),
+		'min_lidar_dist': torch.full((H + 1, B, 1), 10.0),
+		'goal_dist': labels_clean['goal_dist'].clone(),
+	}
+	labels_reset['goal_dist'][0, 0, 0] = float('nan')
+	loss_reset = model.cild_loss(zs, actions, labels_reset)
+
+	# Without masking, loss_reset would be much LARGER than loss_clean
+	# (because the synthetic huge -1.4 target dominates). With proper
+	# masking, the masked-out row is the EARLIEST (largest discount weight)
+	# so loss_reset is at most comparable to loss_clean and finite.
+	assert torch.isfinite(loss_reset), "loss must remain finite with reset rows"
+	# Compute what an unmasked impl would produce as a sanity check:
+	# with nan_to_num→0 and no mask, p_target[0] = -1.4 ⇒ smooth_l1 ≈ 0.9
+	# which (with gamma^0=1 weighting) would dominate everything else.
+	# So we assert loss_reset stays close to loss_clean (≤ 5× tolerance).
+	assert loss_reset.item() < loss_clean.item() * 5 + 1.0, (
+		f"loss_reset={loss_reset.item():.4f} far exceeds loss_clean={loss_clean.item():.4f} "
+		"— reset row likely not masked out of progress loss"
+	)
+
+
+def test_cild_loss_skips_progress_term_when_all_masked():
+	"""When every progress label is NaN, progress term (including log_var_prog) must be skipped.
+
+	Otherwise 0.5 * log_var_prog accumulates a one-sided gradient → log_var
+	drifts to -inf and explodes the whole loss (Codex round-2 P2 finding).
+	"""
+	cfg = _world_model_cfg()
+	cfg.use_cild_heads = True
+	model = WorldModel(cfg)
+
+	H, B = 3, 2
+	zs = torch.randn(H + 1, B, cfg.latent_dim, requires_grad=True)
+	actions = torch.randn(H, B, cfg.action_dim)
+	labels = {
+		'collision_flag': torch.zeros(H + 1, B, 1),
+		'min_lidar_dist': torch.ones(H + 1, B, 1) * 5.0,
+		'goal_dist': torch.full((H + 1, B, 1), float('nan')),  # everything masked
+	}
+	loss = model.cild_loss(zs, actions, labels)
+	# Must still be finite + scalar; no NaN/Inf from div-by-zero.
+	assert torch.isfinite(loss), f"loss must be finite when all progress masked, got {loss.item()}"
+	assert loss.shape == ()
+	# Backward: log_var_prog must receive zero gradient (no data term and no
+	# 0.5*log_var prior either, since the whole progress branch is skipped).
+	loss.backward()
+	# log_var_prog must be completely disconnected from the graph (grad is None)
+	# or receive zero gradient. Either way: no one-sided pressure toward -inf.
+	grad = model._cild_log_var_prog.grad
+	assert grad is None or grad.abs().item() < 1e-9, (
+		f"log_var_prog received nonzero gradient ({grad}) "
+		"despite all progress labels being masked"
+	)

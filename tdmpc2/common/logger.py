@@ -267,6 +267,11 @@ class Logger:
 				"episode_in_hazard_steps",
 				"episode_goal_reached_count",
 				"episode_final_goal_distance",
+				"cild_loss",
+				"total_loss",
+				"reward_loss",
+				"value_loss",
+				"consistency_loss",
 			]
 			row = [d.get(k, float('nan')) for k in train_keys]
 			if not hasattr(self, '_train'):
