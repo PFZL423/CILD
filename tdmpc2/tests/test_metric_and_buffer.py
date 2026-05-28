@@ -54,6 +54,7 @@ def make_buffer(use_cild_heads=False):
 		horizon=3,
 		multitask=False,
 		use_cild_heads=use_cild_heads,
+		occupancy_dim=16,
 	)
 	buffer = Buffer(cfg)
 	buffer._device = torch.device('cpu')
@@ -73,6 +74,7 @@ def make_sample_td(cfg, include_labels=False):
 			collision_flag=torch.zeros(n),
 			min_lidar_dist=torch.ones(n),
 			goal_dist=torch.arange(n, dtype=torch.float32),
+			occupancy_gt=torch.zeros(n, cfg.occupancy_dim),
 		)
 	return TensorDict(data, batch_size=(n,))
 
@@ -112,9 +114,10 @@ def test_buffer_with_labels():
 
 	batch = buffer.sample_with_labels()
 
-	assert len(batch) == 8
-	collision_flag, min_lidar_dist, goal_dist = batch[-3:]
+	assert len(batch) == 9
+	collision_flag, min_lidar_dist, goal_dist, occupancy_gt = batch[-4:]
 	expected_shape = (buffer.cfg.horizon + 1, buffer.cfg.batch_size, 1)
 	assert collision_flag.shape == expected_shape
 	assert min_lidar_dist.shape == expected_shape
 	assert goal_dist.shape == expected_shape
+	assert occupancy_gt.shape == (buffer.cfg.horizon + 1, buffer.cfg.batch_size, buffer.cfg.occupancy_dim)

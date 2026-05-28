@@ -46,6 +46,7 @@ def _make_buffer(use_cild_heads=True):
 		horizon=3,
 		multitask=False,
 		use_cild_heads=use_cild_heads,
+		occupancy_dim=16,
 	)
 	buffer = Buffer(cfg)
 	buffer._device = torch.device('cpu')
@@ -63,6 +64,7 @@ def _make_sample_td(cfg):
 			'collision_flag': torch.zeros(n),
 			'min_lidar_dist': torch.ones(n),
 			'goal_dist': torch.arange(n, dtype=torch.float32),
+			'occupancy_gt': torch.zeros(n, cfg.occupancy_dim),
 		},
 		batch_size=(n,),
 	)
@@ -87,6 +89,8 @@ def _world_model_cfg():
 		log_std_min=-10,
 		log_std_max=2,
 		use_cild_heads=False,
+		occupancy_dim=16,
+		occ_loss_weight=1.0,
 	)
 
 
@@ -119,10 +123,15 @@ def test_buffer_sample_with_labels_returns_label_tensors():
 
 	batch = buffer.sample_with_labels()
 
-	assert len(batch) == 8
-	for label in batch[-3:]:
+	assert len(batch) == 9
+	for label in batch[-4:-1]:
 		assert label is not None
 		assert label.shape == (buffer.cfg.horizon + 1, buffer.cfg.batch_size, 1)
+		assert label.dtype == torch.float32
+	occupancy_gt = batch[-1]
+	assert occupancy_gt is not None
+	assert occupancy_gt.shape == (buffer.cfg.horizon + 1, buffer.cfg.batch_size, buffer.cfg.occupancy_dim)
+	assert occupancy_gt.dtype == torch.float32
 
 
 def test_world_model_cild_loss_is_zero_scalar_and_graph_safe():
@@ -262,3 +271,85 @@ def test_cild_loss_skips_progress_term_when_all_masked():
 		f"log_var_prog received nonzero gradient ({grad}) "
 		"despite all progress labels being masked"
 	)
+
+
+def test_cild_loss_includes_occ_when_gt_present():
+	cfg = _world_model_cfg()
+	cfg.use_cild_heads = True
+	cfg.occ_loss_weight = 1.0
+	model = WorldModel(cfg)
+
+	H, B, K = 3, 4, cfg.occupancy_dim
+	zs = torch.randn(H + 1, B, cfg.latent_dim, requires_grad=True)
+	actions = torch.randn(H, B, cfg.action_dim)
+	labels = {
+		'collision_flag': torch.zeros(H + 1, B, 1),
+		'min_lidar_dist': torch.ones(H + 1, B, 1) * 0.5,
+		'goal_dist': torch.linspace(3, 1, H + 1).unsqueeze(-1).unsqueeze(-1).expand(H + 1, B, 1),
+		'occupancy_gt': torch.rand(H + 1, B, K),
+	}
+
+	loss = model.cild_loss(zs, actions, labels)
+
+	assert loss.shape == ()
+	assert torch.isfinite(loss), f"cild_loss is not finite: {loss.item()}"
+	assert loss.item() > 0.0
+
+	loss.backward()
+	occ_grads = [p.grad for p in model._occupancy_head.parameters()]
+	assert all(grad is not None for grad in occ_grads)
+	assert sum(grad.abs().sum().item() for grad in occ_grads) > 0.0
+	assert model._cild_log_var_occ.grad is not None
+	assert model._cild_log_var_occ.grad.abs().item() > 0.0
+
+
+def test_cild_loss_skips_occ_when_weight_zero():
+	cfg = _world_model_cfg()
+	cfg.use_cild_heads = True
+	cfg.occ_loss_weight = 0.0
+	model = WorldModel(cfg)
+
+	H, B, K = 3, 4, cfg.occupancy_dim
+	zs = torch.randn(H + 1, B, cfg.latent_dim, requires_grad=True)
+	actions = torch.randn(H, B, cfg.action_dim)
+	labels = {
+		'collision_flag': torch.zeros(H + 1, B, 1),
+		'min_lidar_dist': torch.ones(H + 1, B, 1) * 0.5,
+		'goal_dist': torch.linspace(3, 1, H + 1).unsqueeze(-1).unsqueeze(-1).expand(H + 1, B, 1),
+		'occupancy_gt': torch.rand(H + 1, B, K),
+	}
+	labels_without_occ = {k: v for k, v in labels.items() if k != 'occupancy_gt'}
+
+	loss_with_occ_disabled = model.cild_loss(zs, actions, labels)
+	loss_without_occ_key = model.cild_loss(zs, actions, labels_without_occ)
+
+	assert torch.allclose(loss_with_occ_disabled, loss_without_occ_key, atol=1e-6)
+
+	loss_with_occ_disabled.backward()
+	grad = model._cild_log_var_occ.grad
+	assert grad is None or torch.equal(grad, torch.zeros_like(grad))
+
+
+def test_cild_loss_skips_occ_when_all_gt_nan():
+	cfg = _world_model_cfg()
+	cfg.use_cild_heads = True
+	cfg.occ_loss_weight = 1.0
+	model = WorldModel(cfg)
+
+	H, B, K = 3, 4, cfg.occupancy_dim
+	zs = torch.randn(H + 1, B, cfg.latent_dim, requires_grad=True)
+	actions = torch.randn(H, B, cfg.action_dim)
+	labels = {
+		'collision_flag': torch.zeros(H + 1, B, 1),
+		'min_lidar_dist': torch.ones(H + 1, B, 1) * 0.5,
+		'goal_dist': torch.linspace(3, 1, H + 1).unsqueeze(-1).unsqueeze(-1).expand(H + 1, B, 1),
+		'occupancy_gt': torch.full((H + 1, B, K), float('nan')),
+	}
+
+	loss = model.cild_loss(zs, actions, labels)
+
+	assert torch.isfinite(loss).item() is True
+
+	loss.backward()
+	grad = model._cild_log_var_occ.grad
+	assert grad is None or torch.equal(grad, torch.zeros_like(grad))

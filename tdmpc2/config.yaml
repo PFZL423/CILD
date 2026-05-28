@@ -70,6 +70,7 @@ use_cild_heads: false
 use_cild_mppi: false
 risk_horizon_k: 5
 occupancy_dim: 16
+occ_loss_weight: 1.0
 cild_head_hidden: 256
 
 # logging

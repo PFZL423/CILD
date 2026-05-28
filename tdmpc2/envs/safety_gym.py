@@ -50,6 +50,38 @@ def _min_obstacle_surface_dist(task):
 	return min(dists) if dists else float('inf')
 
 
+def _compute_occupancy_gt(task, k: int) -> np.ndarray:
+	"""K-bin polar soft occupancy labels around the agent."""
+	d_bins = np.full(k, np.inf, dtype=np.float32)
+	if task.hazards.num == 0 and task.vases.num == 0:
+		return np.zeros(k, dtype=np.float32)
+
+	agent_xy = task.agent.pos[:2]
+	agent_mat = task.agent.mat
+	agent_yaw = float(np.arctan2(agent_mat[1, 0], agent_mat[0, 0]))
+	cos_yaw = float(np.cos(agent_yaw))
+	sin_yaw = float(np.sin(agent_yaw))
+	bin_width = float(2.0 * np.pi / k)
+
+	obstacles = []
+	if task.hazards.num > 0:
+		obstacles.extend((h[:2], task.hazards.size) for h in task.hazards.pos)
+	if task.vases.num > 0:
+		obstacles.extend((v[:2], task.vases.size) for v in task.vases.pos)
+
+	for obs_xy, obs_radius in obstacles:
+		dx = float(obs_xy[0] - agent_xy[0])
+		dy = float(obs_xy[1] - agent_xy[1])
+		rel_x = cos_yaw * dx + sin_yaw * dy
+		rel_y = -sin_yaw * dx + cos_yaw * dy
+		theta_rel = float(np.arctan2(rel_y, rel_x))
+		bin_idx = int(np.floor((theta_rel + np.pi) / bin_width)) % k
+		d = max(float(np.linalg.norm([rel_x, rel_y]) - obs_radius), 0.0)
+		d_bins[bin_idx] = min(d_bins[bin_idx], d)
+
+	return np.exp(-d_bins / 0.5).astype(np.float32)
+
+
 class SafetyGymnasiumWrapper(gym.Wrapper):
 	"""Bridge between safety-gymnasium 1.0 and TD-MPC2's TensorWrapper.
 
@@ -170,6 +202,7 @@ class SafetyGymnasiumWrapper(gym.Wrapper):
 		info['collision_flag'] = float((c_hazards + c_vases_contact + c_vases_velocity) > 0.0)
 		info['min_lidar_dist'] = _min_obstacle_surface_dist(self.env.unwrapped.task)
 		info['goal_dist'] = float(self._last_dist_goal)
+		info['occupancy_gt'] = _compute_occupancy_gt(task, int(getattr(self.cfg, 'occupancy_dim', 16)))
 
 		return obs, reward, done, info
 

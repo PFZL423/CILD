@@ -97,7 +97,7 @@ class Buffer():
 		"""
 		keys = ["obs", "action", "reward", "terminated", "task"]
 		if getattr(self.cfg, 'use_cild_heads', False):
-			keys += ["collision_flag", "min_lidar_dist", "goal_dist"]
+			keys += ["collision_flag", "min_lidar_dist", "goal_dist", "occupancy_gt"]
 		td = td.select(*keys, strict=False).to(self._device, non_blocking=True)
 		obs = td.get('obs').contiguous()
 		action = td.get('action')[1:].contiguous()
@@ -120,13 +120,13 @@ class Buffer():
 	def sample_with_labels(self):
 		"""Sample a batch and return CILD auxiliary labels.
 
-		Returns 8-tuple: (obs, action, reward, terminated, task, collision_flag,
-		min_lidar_dist, goal_dist). Label tensors will be None if the trainer
+		Returns 9-tuple: (obs, action, reward, terminated, task, collision_flag,
+		min_lidar_dist, goal_dist, occupancy_gt). Label tensors will be None if the trainer
 		has not yet been wired to write them into the buffer (Phase 1 task).
 		"""
 		td = self._buffer.sample().view(-1, self.cfg.horizon+1).permute(1, 0)
 		obs, action, reward, terminated, task = self._prepare_batch(td)
-		td = td.select("collision_flag", "min_lidar_dist", "goal_dist", strict=False).to(self._device, non_blocking=True)
+		td = td.select("collision_flag", "min_lidar_dist", "goal_dist", "occupancy_gt", strict=False).to(self._device, non_blocking=True)
 
 		def _maybe(name):
 			t = td.get(name, None)
@@ -137,4 +137,6 @@ class Buffer():
 		collision_flag = _maybe('collision_flag')
 		min_lidar_dist = _maybe('min_lidar_dist')
 		goal_dist = _maybe('goal_dist')
-		return obs, action, reward, terminated, task, collision_flag, min_lidar_dist, goal_dist
+		occ = td.get('occupancy_gt', None)
+		occupancy_gt = occ.contiguous() if occ is not None else None
+		return obs, action, reward, terminated, task, collision_flag, min_lidar_dist, goal_dist, occupancy_gt

@@ -45,6 +45,38 @@ def _min_obstacle_surface_dist(task):
     return min(dists) if dists else float('inf')
 
 
+def _compute_occupancy_gt(task, k: int) -> np.ndarray:
+    """K-bin polar soft occupancy labels around the agent."""
+    d_bins = np.full(k, np.inf, dtype=np.float32)
+    if task.hazards.num == 0 and task.vases.num == 0:
+        return np.zeros(k, dtype=np.float32)
+
+    agent_xy = task.agent.pos[:2]
+    agent_mat = task.agent.mat
+    agent_yaw = float(np.arctan2(agent_mat[1, 0], agent_mat[0, 0]))
+    cos_yaw = float(np.cos(agent_yaw))
+    sin_yaw = float(np.sin(agent_yaw))
+    bin_width = float(2.0 * np.pi / k)
+
+    obstacles = []
+    if task.hazards.num > 0:
+        obstacles.extend((h[:2], task.hazards.size) for h in task.hazards.pos)
+    if task.vases.num > 0:
+        obstacles.extend((v[:2], task.vases.size) for v in task.vases.pos)
+
+    for obs_xy, obs_radius in obstacles:
+        dx = float(obs_xy[0] - agent_xy[0])
+        dy = float(obs_xy[1] - agent_xy[1])
+        rel_x = cos_yaw * dx + sin_yaw * dy
+        rel_y = -sin_yaw * dx + cos_yaw * dy
+        theta_rel = float(np.arctan2(rel_y, rel_x))
+        bin_idx = int(np.floor((theta_rel + np.pi) / bin_width)) % k
+        d = max(float(np.linalg.norm([rel_x, rel_y]) - obs_radius), 0.0)
+        d_bins[bin_idx] = min(d_bins[bin_idx], d)
+
+    return np.exp(-d_bins / 0.5).astype(np.float32)
+
+
 class _SafetyGymShim(gym.Env):
     """
     Converts safety-gymnasium's 6-tuple step() to standard gymnasium 5-tuple,
@@ -60,10 +92,11 @@ class _SafetyGymShim(gym.Env):
     Must be at module level (not nested) to remain picklable for AsyncVectorEnv.
     """
 
-    def __init__(self, env, cost_lambda: float = 0.0):
+    def __init__(self, env, cost_lambda: float = 0.0, occupancy_dim: int = 16):
         super().__init__()
         self._env = env
         self._cost_lambda = cost_lambda
+        self._occupancy_dim = int(occupancy_dim)
         self.observation_space = gym.spaces.Box(
             low=env.observation_space.low.astype(np.float32),
             high=env.observation_space.high.astype(np.float32),
@@ -88,6 +121,7 @@ class _SafetyGymShim(gym.Env):
         self._last_dist_goal = float('nan')
         self._last_min_lidar_dist = float('nan')
         self._last_collision_flag = 0.0
+        self._last_occupancy_gt = np.zeros(self._occupancy_dim, dtype=np.float32)
         self._raw_reward_total = 0.0
 
     def _final_snapshot(self):
@@ -109,6 +143,7 @@ class _SafetyGymShim(gym.Env):
             'collision_flag': float(self._last_collision_flag),
             'min_lidar_dist': float(self._last_min_lidar_dist),
             'goal_dist': float(self._last_dist_goal),
+            'occupancy_gt': self._last_occupancy_gt.astype(np.float32),
         }
 
     def reset(self, *, seed=None, options=None):
@@ -144,6 +179,7 @@ class _SafetyGymShim(gym.Env):
             self._in_hazard_steps += 1
         self._last_collision_flag = float((c_hazards + c_vases_c + c_vases_v) > 0.0)
         self._last_min_lidar_dist = _min_obstacle_surface_dist(self._env.unwrapped.task)
+        self._last_occupancy_gt = _compute_occupancy_gt(self._env.unwrapped.task, self._occupancy_dim)
         try:
             self._last_dist_goal = float(self._env.unwrapped.task.dist_goal())
         except Exception:
@@ -166,15 +202,16 @@ class _SafetyGymShim(gym.Env):
         info['collision_flag'] = float(self._last_collision_flag)
         info['min_lidar_dist'] = float(self._last_min_lidar_dist)
         info['goal_dist'] = float(self._last_dist_goal)
+        info['occupancy_gt'] = self._last_occupancy_gt.astype(np.float32)
         return obs.astype(np.float32), float(reward), bool(terminated), bool(truncated), info
 
     def close(self):
         self._env.close()
 
 
-def _make_shim(task: str, cost_lambda: float) -> _SafetyGymShim:
+def _make_shim(task: str, cost_lambda: float, occupancy_dim: int) -> _SafetyGymShim:
     """Module-level factory — picklable for AsyncVectorEnv subprocesses."""
-    return _SafetyGymShim(safety_gymnasium.make(task), cost_lambda)
+    return _SafetyGymShim(safety_gymnasium.make(task), cost_lambda, occupancy_dim)
 
 
 class SafetyGymVecEnv:
@@ -187,9 +224,10 @@ class SafetyGymVecEnv:
         self.device = torch.device(device)
         self.num_envs = int(cfg.num_envs)
         cost_lambda = float(getattr(cfg, 'cost_lambda', 0.0))
+        occupancy_dim = int(getattr(cfg, 'occupancy_dim', 16))
 
         env_fns = [
-            partial(_make_shim, cfg.task, cost_lambda)
+            partial(_make_shim, cfg.task, cost_lambda, occupancy_dim)
             for _ in range(self.num_envs)
         ]
         self._vec = AsyncVectorEnv(env_fns)
@@ -226,6 +264,7 @@ class SafetyGymVecEnv:
         'in_hazard_steps', 'goal_reached_count',
         'final_goal_distance', 'success',
         'collision_flag', 'min_lidar_dist', 'goal_dist',
+        'occupancy_gt',
     )
 
     def step(self, action: torch.Tensor):

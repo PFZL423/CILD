@@ -50,6 +50,7 @@ class WorldModel(nn.Module):
 			self._occupancy_head = OccupancyHead(cfg.latent_dim, getattr(cfg, 'occupancy_dim', 16), hidden)
 			self._cild_log_var_risk = nn.Parameter(torch.zeros(()))
 			self._cild_log_var_prog = nn.Parameter(torch.zeros(()))
+			self._cild_log_var_occ = nn.Parameter(torch.zeros(()))
 
 	def init(self):
 		# Create params
@@ -252,6 +253,7 @@ class WorldModel(nn.Module):
 		collision_flag = labels.get('collision_flag')
 		min_lidar_dist = labels.get('min_lidar_dist')
 		goal_dist = labels.get('goal_dist')
+		occupancy_gt = labels.get('occupancy_gt')
 
 		if collision_flag is None or min_lidar_dist is None or goal_dist is None:
 			return torch.zeros((), device=zs.device, dtype=zs.dtype)
@@ -332,4 +334,31 @@ class WorldModel(nn.Module):
 			total = (total
 					 + torch.exp(-self._cild_log_var_prog) * progress_loss
 					 + 0.5 * self._cild_log_var_prog)
+
+		occ_weight = float(getattr(self.cfg, 'occ_loss_weight', 1.0))
+		occ_has_data = (occupancy_gt is not None) and (occ_weight > 0.0)
+		if occ_has_data:
+			occ_pred = self._occupancy_head(zs[:-1])  # (H, B, K), in [0,1]
+			occ_target_raw = occupancy_gt[:-1]  # (H, B, K)
+
+			# Reset rows are all-NaN occupancy placeholders; mask them out.
+			occ_nan_mask = torch.isnan(occ_target_raw).any(dim=-1)  # (H, B)
+			occ_valid = (~occ_nan_mask).float()  # (H, B)
+			occ_target = torch.nan_to_num(occ_target_raw, nan=0.0).clamp(0.0, 1.0)
+
+			occ_bce = torch.nn.functional.binary_cross_entropy(
+				occ_pred.clamp(1e-6, 1 - 1e-6),
+				occ_target,
+				reduction='none',
+			).mean(dim=-1)  # (H, B)
+
+			occ_weighted = occ_bce * occ_valid * discount
+			occ_valid_weight = (occ_valid * discount).sum()
+			occ_has_step = occ_valid_weight > 1e-8
+
+			if occ_has_step:
+				occ_loss = occ_weighted.sum() / occ_valid_weight
+				total = (total
+						 + occ_weight * (torch.exp(-self._cild_log_var_occ) * occ_loss
+										 + 0.5 * self._cild_log_var_occ))
 		return total

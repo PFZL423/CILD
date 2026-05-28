@@ -86,7 +86,8 @@ class OnlineTrainer(Trainer):
 		)
 
 	def to_td(self, obs, action=None, reward=None, terminated=None,
-		  collision_flag=None, min_lidar_dist=None, goal_dist=None):
+		  collision_flag=None, min_lidar_dist=None, goal_dist=None,
+		  occupancy_gt=None):
 		"""Creates a TensorDict for a new episode."""
 		if isinstance(obs, dict):
 			obs = TensorDict(obs, batch_size=(), device='cpu')
@@ -110,6 +111,10 @@ class OnlineTrainer(Trainer):
 			goal_dist = torch.tensor(float('nan'))
 		elif not isinstance(goal_dist, torch.Tensor):
 			goal_dist = torch.tensor(goal_dist)
+		if occupancy_gt is None:
+			occupancy_gt = torch.full((int(getattr(self.cfg, 'occupancy_dim', 16)),), float('nan'))
+		elif not isinstance(occupancy_gt, torch.Tensor):
+			occupancy_gt = torch.tensor(occupancy_gt)
 		data = dict(
 			obs=obs,
 			action=action.unsqueeze(0),
@@ -121,6 +126,7 @@ class OnlineTrainer(Trainer):
 				collision_flag=collision_flag.unsqueeze(0),
 				min_lidar_dist=min_lidar_dist.unsqueeze(0),
 				goal_dist=goal_dist.unsqueeze(0),
+				occupancy_gt=occupancy_gt.unsqueeze(0),
 			)
 		td = TensorDict(data, batch_size=(1,))
 		return td
@@ -177,6 +183,7 @@ class OnlineTrainer(Trainer):
 				collision_flag=info.get('collision_flag', float('nan')),
 				min_lidar_dist=info.get('min_lidar_dist', float('nan')),
 				goal_dist=info.get('goal_dist', float('nan')),
+				occupancy_gt=info.get('occupancy_gt', np.full(int(getattr(self.cfg, 'occupancy_dim', 16)), np.nan, dtype=np.float32)),
 			))
 
 			# Update agent

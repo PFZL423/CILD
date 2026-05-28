@@ -46,7 +46,7 @@ class TDMPC2(torch.nn.Module):
 			_optim_groups.append({'params': self.model._risk_head.parameters()})
 			_optim_groups.append({'params': self.model._progress_head.parameters()})
 			_optim_groups.append({'params': self.model._occupancy_head.parameters()})
-			_optim_groups.append({'params': [self.model._cild_log_var_risk, self.model._cild_log_var_prog]})
+			_optim_groups.append({'params': [self.model._cild_log_var_risk, self.model._cild_log_var_prog, self.model._cild_log_var_occ]})
 		self.optim = torch.optim.Adam(_optim_groups, lr=self.cfg.lr, capturable=True)
 		self.pi_optim = torch.optim.Adam(self.model._pi.parameters(), lr=self.cfg.lr, eps=1e-5, capturable=True)
 		self.model.eval()
@@ -514,11 +514,12 @@ class TDMPC2(torch.nn.Module):
 			dict: Dictionary of training statistics.
 		"""
 		if getattr(self.cfg, 'use_cild_heads', False):
-			obs, action, reward, terminated, task, collision_flag, min_lidar_dist, goal_dist = buffer.sample_with_labels()
+			obs, action, reward, terminated, task, collision_flag, min_lidar_dist, goal_dist, occupancy_gt = buffer.sample_with_labels()
 			labels = {
 				'collision_flag': collision_flag,
 				'min_lidar_dist': min_lidar_dist,
 				'goal_dist': goal_dist,
+				'occupancy_gt': occupancy_gt,
 			}
 		else:
 			obs, action, reward, terminated, task = buffer.sample()
