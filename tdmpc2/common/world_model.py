@@ -45,7 +45,8 @@ class WorldModel(nn.Module):
 			hidden = getattr(cfg, 'cild_head_hidden', 256)
 			self._risk_head = RiskHead(cfg.latent_dim, cfg.action_dim, hidden)
 			self._progress_head = ProgressHead(cfg.latent_dim, cfg.action_dim, hidden)
-			# Occupancy loss intentionally deferred to Phase C: env does not yet expose K-bin occupancy GT.
+			# Occupancy loss to be hooked up in Phase C training side (env needs to expose K-bin GT)
+			# per CILD_WAM_ROADMAP §12.4; inference (MPPI Upgrade C, OOD-aware horizon) lands in Phase 2 per §12.5.
 			self._occupancy_head = OccupancyHead(cfg.latent_dim, getattr(cfg, 'occupancy_dim', 16), hidden)
 			self._cild_log_var_risk = nn.Parameter(torch.zeros(()))
 			self._cild_log_var_prog = nn.Parameter(torch.zeros(()))
