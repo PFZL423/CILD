@@ -45,7 +45,10 @@ class WorldModel(nn.Module):
 			hidden = getattr(cfg, 'cild_head_hidden', 256)
 			self._risk_head = RiskHead(cfg.latent_dim, cfg.action_dim, hidden)
 			self._progress_head = ProgressHead(cfg.latent_dim, cfg.action_dim, hidden)
+			# Occupancy loss intentionally deferred to Phase C: env does not yet expose K-bin occupancy GT.
 			self._occupancy_head = OccupancyHead(cfg.latent_dim, getattr(cfg, 'occupancy_dim', 16), hidden)
+			self._cild_log_var_risk = nn.Parameter(torch.zeros(()))
+			self._cild_log_var_prog = nn.Parameter(torch.zeros(()))
 
 	def init(self):
 		# Create params
@@ -228,7 +231,7 @@ class WorldModel(nn.Module):
 		return Q.sum(0) / 2
 
 	def cild_loss(self, zs, actions, labels):
-		"""CILD auxiliary head loss. Phase 1 will fill in the real implementation.
+		"""CILD auxiliary head loss: risk BCE + proximity auxiliary + progress.
 
 		Args:
 			zs: latent rollout, shape (H+1, B, latent_dim)
@@ -237,6 +240,95 @@ class WorldModel(nn.Module):
 				each tensor shape (H+1, B, 1), or None values if not yet wired.
 
 		Returns:
-			Scalar tensor (currently 0.0, to be implemented in Phase 1).
+			Scalar loss tensor with gradient through dynamics chain.
 		"""
-		return torch.zeros((), device=zs.device, dtype=zs.dtype)
+		if not getattr(self.cfg, 'use_cild_heads', False):
+			return torch.zeros((), device=zs.device, dtype=zs.dtype)
+
+		if labels is None:
+			return torch.zeros((), device=zs.device, dtype=zs.dtype)
+
+		collision_flag = labels.get('collision_flag')
+		min_lidar_dist = labels.get('min_lidar_dist')
+		goal_dist = labels.get('goal_dist')
+
+		if collision_flag is None or min_lidar_dist is None or goal_dist is None:
+			return torch.zeros((), device=zs.device, dtype=zs.dtype)
+
+		H = actions.shape[0]
+		device = zs.device
+
+		# ---- detect reset rows (raw NaN in goal_dist) BEFORE sanitize ----
+		# A buffer slice that straddles an episode reset contains a reset
+		# observation whose label fields are NaN placeholders. We mask those
+		# rows out of progress loss because per-step progress is undefined
+		# across an episode boundary (the previous step belongs to a
+		# different episode). Risk labels are still valid (no collision at
+		# reset), so we don't mask them.
+		goal_nan_mask = torch.isnan(goal_dist).squeeze(-1)  # (H+1, B), True = reset row
+
+		# ---- sanitize NaN labels (first step of an episode lacks env info) ----
+		# Replace NaNs with safe defaults: no collision, far obstacle, no progress.
+		coll_clean = torch.nan_to_num(collision_flag, nan=0.0).clamp(0.0, 1.0)
+		lidar_clean = torch.nan_to_num(min_lidar_dist, nan=10.0)
+		goal_clean = torch.nan_to_num(goal_dist, nan=0.0)
+
+		# ---- (b) horizon-window risk label ----
+		k = getattr(self.cfg, 'risk_horizon_k', 5)
+		coll = coll_clean.squeeze(-1)  # (H+1, B)
+		pad = coll[-1:].expand(min(k, 10), -1)
+		coll_padded = torch.cat([coll, pad], dim=0)
+		window_label = torch.stack(
+			[coll_padded[t:t+k+1].max(dim=0).values for t in range(H+1)], dim=0
+		).clamp(0.0, 1.0)  # (H+1, B)
+
+		# ---- risk head prediction ----
+		risk_pred = self._risk_head(zs[:-1], actions).squeeze(-1)  # (H, B), in [0,1]
+		risk_target = window_label[:-1]  # (H, B)
+		bce = torch.nn.functional.binary_cross_entropy(
+			risk_pred.clamp(1e-6, 1 - 1e-6), risk_target, reduction='none'
+		)
+
+		# ---- (c) min_lidar_dist auxiliary regression ----
+		lidar = lidar_clean[:-1].squeeze(-1)  # (H, B), meters
+		proximity = torch.exp(-lidar / 0.5).clamp(0, 1)
+		mlse = torch.nn.functional.smooth_l1_loss(risk_pred, proximity, reduction='none')
+
+		risk_loss_per_step = bce + 0.3 * mlse  # (H, B)
+
+		# ---- progress head ----
+		p_pred = self._progress_head(zs[:-1], actions).squeeze(-1)  # (H, B)
+		goal_d = goal_clean.squeeze(-1)  # (H+1, B)
+		p_target = goal_d[:-1] - goal_d[1:]  # per-step progress (meters)
+		progress_loss_per_step = torch.nn.functional.smooth_l1_loss(
+			p_pred, p_target, reduction='none'
+		)
+
+		# ---- horizon decay gamma^h ----
+		gamma = 0.5
+		discount = torch.pow(
+			torch.tensor(gamma, device=device),
+			torch.arange(H, device=device).float()
+		).unsqueeze(-1)  # (H, 1)
+		risk_loss = (risk_loss_per_step * discount).mean()
+
+		# Progress label is undefined when either endpoint of the difference
+		# (goal_d[t] or goal_d[t+1]) comes from a reset placeholder.
+		# Mask those steps out of the progress loss; if every step in the
+		# batch is masked (rare), skip the progress term entirely so the
+		# log-variance parameter does not receive a one-sided gradient.
+		progress_valid = (~(goal_nan_mask[:-1] | goal_nan_mask[1:])).float()  # (H, B)
+		progress_weighted = progress_loss_per_step * progress_valid * discount
+		valid_weight = (progress_valid * discount).sum()
+		# Threshold: at least one valid weighted row required.
+		progress_has_data = valid_weight > 1e-8
+
+		# ---- Kendall 2018 uncertainty weighting ----
+		total = (torch.exp(-self._cild_log_var_risk) * risk_loss
+				 + 0.5 * self._cild_log_var_risk)
+		if progress_has_data:
+			progress_loss = progress_weighted.sum() / valid_weight
+			total = (total
+					 + torch.exp(-self._cild_log_var_prog) * progress_loss
+					 + 0.5 * self._cild_log_var_prog)
+		return total

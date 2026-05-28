@@ -46,6 +46,7 @@ class TDMPC2(torch.nn.Module):
 			_optim_groups.append({'params': self.model._risk_head.parameters()})
 			_optim_groups.append({'params': self.model._progress_head.parameters()})
 			_optim_groups.append({'params': self.model._occupancy_head.parameters()})
+			_optim_groups.append({'params': [self.model._cild_log_var_risk, self.model._cild_log_var_prog]})
 		self.optim = torch.optim.Adam(_optim_groups, lr=self.cfg.lr, capturable=True)
 		self.pi_optim = torch.optim.Adam(self.model._pi.parameters(), lr=self.cfg.lr, eps=1e-5, capturable=True)
 		self.model.eval()
