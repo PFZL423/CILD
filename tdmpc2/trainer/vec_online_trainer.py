@@ -23,6 +23,7 @@ class VecOnlineTrainer(Trainer):
 		self._episode_successes = deque(maxlen=100)
 		# Per-episode metric deques (parity with single-env OnlineTrainer).
 		self._episode_costs = deque(maxlen=100)
+		self._episode_costs_recomputed = deque(maxlen=100)
 		self._episode_cost_hazards = deque(maxlen=100)
 		self._episode_cost_vases_c = deque(maxlen=100)
 		self._episode_cost_vases_v = deque(maxlen=100)
@@ -53,6 +54,7 @@ class VecOnlineTrainer(Trainer):
 		"""Evaluate a TD-MPC2 agent in full-vector rollout batches."""
 		ep_rewards, ep_raw_rewards, ep_successes, ep_lengths = [], [], [], []
 		ep_costs, ep_ch, ep_cvc, ep_cvv = [], [], [], []
+		ep_costs_recomputed = []
 		ep_ih, ep_gr, ep_fgd = [], [], []
 		num_rollouts = ceil(self.cfg.eval_episodes / self.cfg.num_envs)
 		for _ in range(num_rollouts):
@@ -65,7 +67,7 @@ class VecOnlineTrainer(Trainer):
 			# Latest metric snapshot per env (overwritten each step until that
 			# env's first 'done' stops updating it via the active mask).
 			last_metrics = {k: torch.zeros(self.cfg.num_envs, dtype=torch.float32, device=obs.device)
-				for k in ('raw_reward_total', 'cost_total', 'cost_hazards_total',
+				for k in ('raw_reward_total', 'cost_total', 'cost_recomputed_total', 'cost_hazards_total',
 					'cost_vases_contact_total', 'cost_vases_velocity_total',
 					'in_hazard_steps', 'goal_reached_count', 'final_goal_distance')}
 			for _ in range(self.cfg.episode_length):
@@ -92,6 +94,7 @@ class VecOnlineTrainer(Trainer):
 			ep_successes.extend(episode_success.detach().cpu().tolist())
 			ep_lengths.extend(episode_length.detach().cpu().tolist())
 			ep_costs.extend(last_metrics['cost_total'].detach().cpu().tolist())
+			ep_costs_recomputed.extend(last_metrics['cost_recomputed_total'].detach().cpu().tolist())
 			ep_ch.extend(last_metrics['cost_hazards_total'].detach().cpu().tolist())
 			ep_cvc.extend(last_metrics['cost_vases_contact_total'].detach().cpu().tolist())
 			ep_cvv.extend(last_metrics['cost_vases_velocity_total'].detach().cpu().tolist())
@@ -105,6 +108,7 @@ class VecOnlineTrainer(Trainer):
 			episode_success=np.nanmean(ep_successes[:limit]),
 			episode_length=np.nanmean(ep_lengths[:limit]),
 			episode_cost=np.nanmean(ep_costs[:limit]),
+			episode_cost_recomputed=np.nanmean(ep_costs_recomputed[:limit]),
 			episode_cost_hazards=np.nanmean(ep_ch[:limit]),
 			episode_cost_vases_contact=np.nanmean(ep_cvc[:limit]),
 			episode_cost_vases_velocity=np.nanmean(ep_cvv[:limit]),
@@ -149,6 +153,7 @@ class VecOnlineTrainer(Trainer):
 				success_cpu = info.get('success', zeros).detach().cpu()
 				raw_cpu = info.get('raw_reward_total', zeros).detach().cpu()
 				cost_cpu = info.get('cost_total', zeros).detach().cpu()
+				cost_recomputed_cpu = info.get('cost_recomputed_total', zeros).detach().cpu()
 				ch_cpu = info.get('cost_hazards_total', zeros).detach().cpu()
 				cvc_cpu = info.get('cost_vases_contact_total', zeros).detach().cpu()
 				cvv_cpu = info.get('cost_vases_velocity_total', zeros).detach().cpu()
@@ -161,6 +166,7 @@ class VecOnlineTrainer(Trainer):
 					self._episode_lengths.append(float(length_cpu[idx]))
 					self._episode_successes.append(float(success_cpu[idx]))
 					self._episode_costs.append(float(cost_cpu[idx]))
+					self._episode_costs_recomputed.append(float(cost_recomputed_cpu[idx]))
 					self._episode_cost_hazards.append(float(ch_cpu[idx]))
 					self._episode_cost_vases_c.append(float(cvc_cpu[idx]))
 					self._episode_cost_vases_v.append(float(cvv_cpu[idx]))
@@ -192,6 +198,7 @@ class VecOnlineTrainer(Trainer):
 					episode_success=_nanmean(self._episode_successes),
 					episode_length=_nanmean(self._episode_lengths),
 					episode_cost=_nanmean(self._episode_costs),
+					episode_cost_recomputed=_nanmean(self._episode_costs_recomputed),
 					episode_cost_hazards=_nanmean(self._episode_cost_hazards),
 					episode_cost_vases_contact=_nanmean(self._episode_cost_vases_c),
 					episode_cost_vases_velocity=_nanmean(self._episode_cost_vases_v),

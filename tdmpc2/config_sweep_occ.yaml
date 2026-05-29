@@ -1,0 +1,28 @@
+# Phase C occupancy-head loss-weight ablation sweep.
+#
+# Grid: occ_loss_weight in {0.0, 1.0, 2.0}   (off / default / 2x default)
+# Invocation:
+#   python tdmpc2/train.py --config-name=config_sweep_occ -m
+#
+# Notes:
+#   - Composes from `config.yaml`; overrides only what this ablation needs.
+#   - `use_cild_heads: true` is required: occ head loss only fires when CILD heads are active.
+#   - `exp_name` drives the hydra run subdir so all three runs land under one parent.
+#   - Use --multirun (-m) so hydra fans out the comma-separated `occ_loss_weight` values.
+
+defaults:
+  - config
+  - _self_
+
+exp_name: ablate_occ_loss_weight
+use_cild_heads: true
+occ_loss_weight: 1.0
+
+hydra:
+  mode: MULTIRUN
+  sweeper:
+    params:
+      occ_loss_weight: 0.0,1.0,2.0
+  sweep:
+    dir: outputs/${exp_name}
+    subdir: occ_w_${occ_loss_weight}

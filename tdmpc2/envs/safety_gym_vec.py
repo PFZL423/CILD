@@ -114,6 +114,7 @@ class _SafetyGymShim(gym.Env):
     def _reset_accumulators(self):
         self._goal_reached_count = 0
         self._cost_total = 0.0
+        self._cost_recomputed_total = 0.0
         self._cost_hazards_total = 0.0
         self._cost_vases_contact_total = 0.0
         self._cost_vases_velocity_total = 0.0
@@ -133,6 +134,7 @@ class _SafetyGymShim(gym.Env):
             'raw_reward_total': float(self._raw_reward_total),
             'cost': 0.0,
             'cost_total': float(self._cost_total),
+            'cost_recomputed_total': float(self._cost_recomputed_total),
             'cost_hazards_total': float(self._cost_hazards_total),
             'cost_vases_contact_total': float(self._cost_vases_contact_total),
             'cost_vases_velocity_total': float(self._cost_vases_velocity_total),
@@ -175,6 +177,7 @@ class _SafetyGymShim(gym.Env):
         self._cost_hazards_total += c_hazards
         self._cost_vases_contact_total += c_vases_c
         self._cost_vases_velocity_total += c_vases_v
+        self._cost_recomputed_total += c_hazards + c_vases_c + c_vases_v
         if c_hazards > 0.0:
             self._in_hazard_steps += 1
         self._last_collision_flag = float((c_hazards + c_vases_c + c_vases_v) > 0.0)
@@ -258,7 +261,7 @@ class SafetyGymVecEnv:
     # convert to GPU tensors so VecOnlineTrainer can index by `done` mask.
     _METRIC_KEYS = (
         'raw_reward_total',
-        'cost', 'cost_total',
+        'cost', 'cost_total', 'cost_recomputed_total',
         'cost_hazards_total',
         'cost_vases_contact_total', 'cost_vases_velocity_total',
         'in_hazard_steps', 'goal_reached_count',

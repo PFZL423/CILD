@@ -1,4 +1,6 @@
 # Logging
+logs/
+outputs/
 tdmpc2/logs/
 tdmpc2/outputs/
 tdmpc2/wandb/
